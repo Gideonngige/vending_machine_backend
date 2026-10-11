@@ -1,104 +1,386 @@
 from .common_imports import *
 
+logger = logging.getLogger(__name__)
+
+
+def get_daraja_urls():
+    """Return URLs for the configured Daraja environment."""
+    if os.environ.get("MPESA_ENVIRONMENT", "").lower() == "production":
+        base_url = "https://api.safaricom.co.ke"
+    else:
+        base_url = "https://sandbox.safaricom.co.ke"
+
+    return {
+        "access_token_url": (
+            f"{base_url}/oauth/v1/generate"
+            "?grant_type=client_credentials"
+        ),
+        "stk_push_url": (
+            f"{base_url}/mpesa/stkpush/v1/processrequest"
+        ),
+    }
+
+
+def get_access_token():
+    """Get an OAuth access token from Daraja."""
+    urls = get_daraja_urls()
+
+    try:
+        response = requests.get(
+            urls["access_token_url"],
+            auth=(
+                os.getenv("MPESA_CONSUMER_KEY"),
+                os.getenv("MPESA_CONSUMER_SECRET"),
+            ),
+            timeout=30,
+        )
+        response.raise_for_status()
+
+        token = response.json().get("access_token")
+        if not token:
+            logger.error("Daraja response did not contain an access token.")
+
+        return token
+
+    except (requests.RequestException, ValueError):
+        logger.exception("Daraja access token request failed.")
+        return None
+
+
+def normalize_mpesa_phone(phone_number):
+    """Convert a Kenyan phone number to 2547XXXXXXXX format."""
+    if not phone_number:
+        return None
+
+    phone = (
+        str(phone_number)
+        .strip()
+        .replace(" ", "")
+        .replace("-", "")
+    )
+
+    if phone.startswith("+254"):
+        phone = phone[1:]
+    elif phone.startswith("0"):
+        phone = "254" + phone[1:]
+    elif phone.startswith("7") or phone.startswith("1"):
+        phone = "254" + phone
+
+    if (
+        len(phone) != 12
+        or not phone.isdigit()
+        or not phone.startswith("254")
+    ):
+        return None
+
+    return phone
+
+
+def lipa_na_mpesa(phone_number, amount, order_reference):
+    """Initiate an STK Push for a coffee vending order."""
+    phone = normalize_mpesa_phone(phone_number)
+
+    if not phone:
+        return {
+            "success": False,
+            "message": "Invalid M-Pesa phone number.",
+        }
+
+    try:
+        amount = Decimal(str(amount))
+    except Exception:
+        return {
+            "success": False,
+            "message": "Invalid payment amount.",
+        }
+
+    # Daraja STK Push accepts whole-number amounts.
+    if amount <= 0 or amount != amount.to_integral_value():
+        return {
+            "success": False,
+            "message": "Amount must be a positive whole number.",
+        }
+
+    access_token = get_access_token()
+    if not access_token:
+        return {
+            "success": False,
+            "message": "Failed to get M-Pesa access token.",
+        }
+
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    shortcode = str(os.getenv("MPESA_SHORTCODE"))
+
+    password = base64.b64encode(
+        f"{shortcode}{os.getenv('MPESA_PASSKEY')}{timestamp}".encode()
+    ).decode()
+
+    payload = {
+        "BusinessShortCode": shortcode,
+        "Password": password,
+        "Timestamp": timestamp,
+        "TransactionType": "CustomerPayBillOnline",
+        "Amount": int(amount),
+        "PartyA": phone,
+        "PartyB": shortcode,
+        "PhoneNumber": phone,
+        "CallBackURL": os.getenv("MPESA_CALLBACK_URL"),
+        "AccountReference": str(order_reference)[:12],
+        "TransactionDesc": "Coffee vending payment",
+    }
+
+    try:
+        response = requests.post(
+            get_daraja_urls()["stk_push_url"],
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+
+        try:
+            data = response.json()
+        except ValueError:
+            return {
+                "success": False,
+                "message": "Invalid response from M-Pesa.",
+            }
+
+        if not response.ok:
+            return {
+                "success": False,
+                "message": (
+                    data.get("errorMessage")
+                    or data.get("ResponseDescription")
+                    or "M-Pesa request failed."
+                ),
+            }
+
+        if data.get("ResponseCode") != "0" or not data.get(
+            "CheckoutRequestID"
+        ):
+            return {
+                "success": False,
+                "message": (
+                    data.get("ResponseDescription")
+                    or "M-Pesa did not accept the payment request."
+                ),
+            }
+
+        return {
+            "success": True,
+            "mpesa": data,
+        }
+
+    except requests.RequestException:
+        logger.exception("Daraja STK Push request failed.")
+        return {
+            "success": False,
+            "message": "Unable to contact M-Pesa. Please try again.",
+        }
+
+
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def initiate_coffee_payment(request, reference):
+    phone_number = request.data.get("phone_number")
+
+    if not phone_number:
+        return Response({
+            "success": False,
+            "message": "M-Pesa phone number is required.",
+        }, status=400)
+
+    order = Order.objects.filter(reference=reference).first()
+
+    if not order:
+        return Response({
+            "success": False,
+            "message": "Order not found.",
+        }, status=404)
+
+    if order.status != "PENDING":
+        return Response({
+            "success": False,
+            "message": "This order is not awaiting payment.",
+        }, status=400)
+
+    payment = Payment.objects.filter(order=order).first()
+
+    if not payment:
+        return Response({
+            "success": False,
+            "message": "Payment record not found.",
+        }, status=404)
+
+    if payment.status == "SUCCESS":
+        return Response({
+            "success": False,
+            "message": "This order has already been paid.",
+        }, status=400)
+
+    stk_result = lipa_na_mpesa(
+        phone_number=phone_number,
+        amount=payment.amount,
+        order_reference=order.reference,
+    )
+
+    if not stk_result.get("success"):
+        return Response({
+            "success": False,
+            "message": stk_result.get(
+                "message", "Unable to initiate payment."
+            ),
+        }, status=400)
+
+    mpesa_data = stk_result["mpesa"]
+
+    payment.phone_number = phone_number
+    payment.status = "PROCESSING"
+    payment.checkout_request_id = mpesa_data["CheckoutRequestID"]
+    payment.merchant_request_id = mpesa_data.get("MerchantRequestID")
+    payment.save()
+
+    return Response({
+        "success": True,
+        "message": (
+            mpesa_data.get("CustomerMessage")
+            or "Check your phone and enter your M-Pesa PIN."
+        ),
+        "order_reference": order.reference,
+        "payment_status": payment.status,
+        "checkout_request_id": payment.checkout_request_id,
+    })
+
+
+
 
 @csrf_exempt
-@require_POST
-def simulate_payment(request, reference):
-    # This endpoint must never be enabled in production.
-    if not settings.DEBUG or getattr(
-        settings, "COFFEE_PAYMENT_MODE", "simulation"
-    ) != "simulation":
-        return error_response(
-            "Payment simulation is disabled.",
-            status=403,
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def mpesa_callback(request):
+    print("Received M-Pesa callback:", request.data)
+    try:
+        stk = (
+            request.data
+            .get("Body", {})
+            .get("stkCallback", {})
         )
 
-    body = json_body(request)
-
-    if body is None:
-        return error_response("Invalid JSON body.")
-
-    result = body.get("result", "success")
-
-    if result not in ("success", "failure"):
-        return error_response("Result must be success or failure.")
-
-    with transaction.atomic():
-        order = get_object_or_404(
-            Order.objects.select_for_update().select_related("product"),
-            reference=reference,
-        )
-        payment = Payment.objects.select_for_update().get(order=order)
-        dispense = DispenseRequest.objects.select_for_update().get(order=order)
-
-        if payment.status == Payment.Status.SUCCESS:
-            return JsonResponse({
-                "success": True,
-                "message": "Payment was already confirmed.",
-                "order": order_payload(order),
+        checkout_request_id = stk.get("CheckoutRequestID")
+        if not checkout_request_id:
+            return Response({
+                "ResultCode": 1,
+                "ResultDesc": "CheckoutRequestID missing",
             })
 
-        if order.status != Order.Status.PENDING:
-            return error_response(
-                f"Order cannot be paid in its current state: {order.status}."
+        result_code = stk.get("ResultCode")
+
+        with transaction.atomic():
+            payment = (
+                Payment.objects
+                .select_for_update()
+                .select_related("order")
+                .filter(checkout_request_id=checkout_request_id)
+                .first()
             )
 
-        if result == "failure":
-            payment.status = Payment.Status.FAILED
-            payment.result_code = "SIMULATED_FAILURE"
-            payment.result_description = "Demo payment failed."
-            payment.save()
+            if not payment:
+                return Response({
+                    "ResultCode": 1,
+                    "ResultDesc": "Payment not found",
+                })
 
-            order.status = Order.Status.FAILED
-            order.save()
+            # Repeated success callbacks must not dispense twice.
+            if payment.status == "SUCCESS":
+                return Response({
+                    "ResultCode": 0,
+                    "ResultDesc": "Already processed",
+                })
 
-            return JsonResponse({
-                "success": True,
-                "message": "Simulated payment failure.",
-                "order": order_payload(order),
-            })
+            order = payment.order
 
-        product = Product.objects.select_for_update().get(
-            pk=order.product_id
+            if result_code == 0:
+                metadata_items = (
+                    stk.get("CallbackMetadata", {}).get("Item", [])
+                )
+                metadata = {
+                    item.get("Name"): item.get("Value")
+                    for item in metadata_items
+                    if item.get("Name")
+                }
+
+                payment.status = "SUCCESS"
+                payment.receipt = metadata.get("MpesaReceiptNumber")
+                payment.result_code = result_code
+                payment.result_description = stk.get("ResultDesc", "")
+                payment.paid_at = timezone.now()
+                payment.save()
+
+                order.status = "PAID"
+                order.save(update_fields=["status"])
+
+                dispense = (
+                    DispenseRequest.objects
+                    .select_for_update()
+                    .filter(order=order)
+                    .first()
+                )
+
+                if dispense:
+                    dispense.status = "READY"
+                    dispense.save(update_fields=["status"])
+
+                # Decrement stock only on the first successful callback.
+
+                product = Product.objects.select_for_update().get(
+                    pk=order.product_id
+                )
+
+                if product.stock_quantity >= order.quantity:
+                    product.stock_quantity -= order.quantity
+                    product.save(update_fields=["stock_quantity"])
+                else:
+                    # Payment succeeded, but there is insufficient stock.
+                    # Do not pretend the coffee has been dispensed.
+                    if dispense:
+                        dispense.status = "FAILED"
+                        dispense.error_message = (
+                            "Payment succeeded but stock is insufficient."
+                        )
+                        dispense.save(
+                            update_fields=["status", "error_message"]
+                        )
+
+            else:
+                payment.status = "FAILED"
+                payment.result_code = result_code
+                payment.result_description = stk.get("ResultDesc", "")
+                payment.save()
+
+                # Keep the order pending so the customer can retry.
+                # Do not mark it paid or release a product.
+
+        return Response({
+            "ResultCode": 0,
+            "ResultDesc": "Accepted",
+        })
+
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "M-Pesa callback processing failed."
         )
+        print("Error processing M-Pesa callback:", traceback.format_exc())
+        return Response({
+            "ResultCode": 1,
+            "ResultDesc": "Server error",
+        }, status=500)
 
-        if product.stock_quantity < order.quantity:
-            payment.status = Payment.Status.FAILED
-            payment.result_code = "OUT_OF_STOCK"
-            payment.result_description = (
-                "Product stock is no longer available."
-            )
-            payment.save()
 
-            order.status = Order.Status.FAILED
-            order.save()
 
-            return error_response(
-                "Product is no longer available. No dispensing was authorized.",
-                status=409,
-            )
 
-        # Demo only. Real payment success must come from
-        # a verified Safaricom callback.
-        payment.status = Payment.Status.SUCCESS
-        payment.result_code = "0"
-        payment.result_description = "SIMULATED payment successful."
-        payment.paid_at = timezone.now()
-        payment.mpesa_receipt_number = ""
-        payment.save()
-
-        order.status = Order.Status.READY
-        order.save()
-
-        dispense.status = DispenseRequest.Status.READY
-        dispense.completed_at = timezone.now()
-        dispense.save()
-
-        product.stock_quantity -= order.quantity
-        product.save(update_fields=["stock_quantity", "updated_at"])
-
-    return JsonResponse({
-        "success": True,
-        "message": "Demo payment successful. Product is ready for collection.",
-        "order": order_payload(order),
-    })

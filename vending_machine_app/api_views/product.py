@@ -1,7 +1,7 @@
 from .common_imports import *
 
 
-@require_GET
+@api_view(["GET"])
 def product_list(request):
     products = Product.objects.filter(is_available=True)
 

@@ -1,8 +1,9 @@
 from .common_imports import *
+from .helper import *
 
 
 @csrf_exempt
-@require_POST
+@api_view(["POST"])
 def create_order(request):
     body = json_body(request)
 
@@ -72,7 +73,7 @@ def create_order(request):
     )
 
 
-@require_GET
+@api_view(["GET"])
 def order_detail(request, reference):
     order = get_object_or_404(
         Order.objects.select_related("product"),
@@ -88,7 +89,7 @@ def order_detail(request, reference):
 
 
 @csrf_exempt
-@require_POST
+@api_view(["POST"])
 def collect_order(request, reference):
     body = json_body(request)
 
