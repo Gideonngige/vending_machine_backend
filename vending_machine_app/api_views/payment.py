@@ -1,3 +1,5 @@
+from decimal import InvalidOperation
+
 from .common_imports import *
 
 logger = logging.getLogger(__name__)
@@ -264,20 +266,21 @@ def initiate_coffee_payment(request, reference):
 @permission_classes([AllowAny])
 def mpesa_callback(request):
     try:
-        stk = (
-            request.data
-            .get("Body", {})
-            .get("stkCallback", {})
-        )
+        # Reject malformed input before touching payment or stock records.
+        data = request.data
+        body = data.get("Body") if isinstance(data, dict) else None
+        stk = body.get("stkCallback") if isinstance(body, dict) else None
+        if not isinstance(stk, dict):
+            return Response({"ResultCode": 1, "ResultDesc": "Invalid callback body"}, status=400)
 
         checkout_request_id = stk.get("CheckoutRequestID")
-        if not checkout_request_id:
-            return Response({
-                "ResultCode": 1,
-                "ResultDesc": "CheckoutRequestID missing",
-            })
-
         result_code = stk.get("ResultCode")
+        if (
+            not isinstance(checkout_request_id, str) or not checkout_request_id.strip()
+            or type(result_code) is not int or result_code < 0
+            or not isinstance(stk.get("ResultDesc", ""), str)
+        ):
+            return Response({"ResultCode": 1, "ResultDesc": "Invalid callback fields"}, status=400)
 
         with transaction.atomic():
             payment = (
@@ -304,17 +307,30 @@ def mpesa_callback(request):
             order = payment.order
 
             if result_code == 0:
-                metadata_items = (
-                    stk.get("CallbackMetadata", {}).get("Item", [])
-                )
-                metadata = {
-                    item.get("Name"): item.get("Value")
-                    for item in metadata_items
-                    if item.get("Name")
-                }
+                callback_metadata = stk.get("CallbackMetadata")
+                items = callback_metadata.get("Item") if isinstance(callback_metadata, dict) else None
+                if not isinstance(items, list) or any(
+                    not isinstance(item, dict) or not isinstance(item.get("Name"), str)
+                    for item in items
+                ):
+                    return Response({"ResultCode": 1, "ResultDesc": "Invalid payment metadata"}, status=400)
+                metadata = {item["Name"]: item.get("Value") for item in items}
+                if len(metadata) != len(items):
+                    return Response({"ResultCode": 1, "ResultDesc": "Duplicate metadata fields"}, status=400)
+                try:
+                    amount = Decimal(str(metadata.get("Amount")))
+                except (InvalidOperation, ValueError):
+                    amount = Decimal("NaN")
+                receipt = metadata.get("MpesaReceiptNumber")
+                if (
+                    not amount.is_finite() or amount <= 0 or amount != payment.amount
+                    or not isinstance(receipt, str) or not receipt.strip()
+                    or len(receipt) > 50
+                ):
+                    return Response({"ResultCode": 1, "ResultDesc": "Payment amount or receipt invalid"}, status=400)
 
                 payment.status = "SUCCESS"
-                payment.mpesa_receipt_number = metadata.get("MpesaReceiptNumber", "")
+                payment.mpesa_receipt_number = receipt.strip()
                 payment.result_code = result_code
                 payment.result_description = stk.get("ResultDesc", "")
                 payment.paid_at = timezone.now()

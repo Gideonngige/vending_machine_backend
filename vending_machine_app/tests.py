@@ -75,3 +75,36 @@ class PaymentCallbackTests(TestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.payment.status, Payment.Status.PROCESSING)
         self.assertEqual(self.order.status, Order.Status.PENDING)
+
+    def test_invalid_success_metadata_leaves_records_unchanged(self):
+        invalid_items = [
+            [],
+            [{"Name": "Amount", "Value": 99},
+             {"Name": "MpesaReceiptNumber", "Value": "TEST"}],
+            [{"Name": "Amount", "Value": "NaN"},
+             {"Name": "MpesaReceiptNumber", "Value": "TEST"}],
+            [{"Name": "Amount", "Value": 100}],
+            [{"Name": "Amount", "Value": 100},
+             {"Name": "MpesaReceiptNumber", "Value": " "}],
+            [None],
+            [{"Name": "Amount", "Value": 100},
+             {"Name": "Amount", "Value": 100},
+             {"Name": "MpesaReceiptNumber", "Value": "TEST"}],
+        ]
+        for items in invalid_items:
+            with self.subTest(items=items):
+                self.payload["Body"]["stkCallback"]["CallbackMetadata"]["Item"] = items
+                self.assertEqual(self.callback().status_code, 400)
+                self.payment.refresh_from_db()
+                self.order.refresh_from_db()
+                self.product.refresh_from_db()
+                self.assertEqual(self.payment.status, Payment.Status.PROCESSING)
+                self.assertEqual(self.order.status, Order.Status.PENDING)
+                self.assertEqual(self.product.stock_quantity, 10)
+
+    def test_malformed_callback_is_rejected(self):
+        for payload in [{}, {"Body": None}, {"Body": {"stkCallback": []}},
+                        {"Body": {"stkCallback": {"CheckoutRequestID": "checkout-test"}}}]:
+            with self.subTest(payload=payload):
+                self.payload = payload
+                self.assertEqual(self.callback().status_code, 400)
