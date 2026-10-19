@@ -1,3 +1,5 @@
+from vending_machine_app.models import PaymentAttempt
+
 from decimal import InvalidOperation
 
 from .common_imports import *
@@ -148,11 +150,16 @@ def lipa_na_mpesa(phone_number, amount, order_reference):
             return {
                 "success": False,
                 "message": "Invalid response from M-Pesa.",
+                "uncertain": True,
             }
+
+        if not isinstance(data, dict):
+            return {"success": False, "uncertain": True, "message": "Unexpected M-Pesa response. Check this order before retrying."}
 
         if not response.ok:
             return {
                 "success": False,
+                "uncertain": response.status_code >= 500,
                 "message": (
                     data.get("errorMessage")
                     or data.get("ResponseDescription")
@@ -165,6 +172,7 @@ def lipa_na_mpesa(phone_number, amount, order_reference):
         ):
             return {
                 "success": False,
+                "uncertain": data.get("ResponseCode") in (None, "0"),
                 "message": (
                     data.get("ResponseDescription")
                     or "M-Pesa did not accept the payment request."
@@ -180,7 +188,8 @@ def lipa_na_mpesa(phone_number, amount, order_reference):
         logger.exception("Daraja STK Push request failed.")
         return {
             "success": False,
-            "message": "Unable to contact M-Pesa. Please try again.",
+            "message": "M-Pesa outcome is unknown. Check this order before retrying.",
+            "uncertain": True,
         }
 
 
@@ -188,8 +197,9 @@ def lipa_na_mpesa(phone_number, amount, order_reference):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@transaction.atomic
 def initiate_coffee_payment(request, reference):
-    phone_number = request.data.get("phone_number")
+    phone_number = normalize_mpesa_phone(request.data.get("phone_number"))
 
     if not phone_number:
         return Response({
@@ -211,7 +221,7 @@ def initiate_coffee_payment(request, reference):
             "message": "This order is not awaiting payment.",
         }, status=400)
 
-    payment = Payment.objects.filter(order=order).first()
+    payment = Payment.objects.select_for_update().filter(order=order).first()
 
     if not payment:
         return Response({
@@ -225,6 +235,9 @@ def initiate_coffee_payment(request, reference):
             "message": "This order has already been paid.",
         }, status=400)
 
+    if payment.attempts.filter(status__in=["PROCESSING", "UNKNOWN"]).exists():
+        return Response({"success": False, "message": "A payment attempt is still pending. Check this order before retrying."}, status=409)
+
     stk_result = lipa_na_mpesa(
         phone_number=phone_number,
         amount=payment.amount,
@@ -232,19 +245,27 @@ def initiate_coffee_payment(request, reference):
     )
 
     if not stk_result.get("success"):
+        PaymentAttempt.objects.create(
+            payment=payment, phone_number=phone_number, amount=payment.amount,
+            status="UNKNOWN" if stk_result.get("uncertain") else "FAILED",
+            result_description=stk_result.get("message", "Unable to initiate payment."),
+        )
+        payment.status = "PROCESSING" if stk_result.get("uncertain") else "FAILED"
+        payment.save(update_fields=["status", "updated_at"])
         return Response({
-            "success": False,
-            "message": stk_result.get(
-                "message", "Unable to initiate payment."
-            ),
-        }, status=400)
+            "success": False, "message": stk_result.get("message", "Unable to initiate payment."),
+        }, status=409 if stk_result.get("uncertain") else 400)
 
     mpesa_data = stk_result["mpesa"]
-
+    attempt = PaymentAttempt.objects.create(
+        payment=payment, phone_number=phone_number, amount=payment.amount,
+        checkout_request_id=mpesa_data["CheckoutRequestID"],
+        merchant_request_id=mpesa_data.get("MerchantRequestID") or "",
+    )
     payment.phone_number = phone_number
     payment.status = "PROCESSING"
-    payment.checkout_request_id = mpesa_data["CheckoutRequestID"]
-    payment.merchant_request_id = mpesa_data.get("MerchantRequestID")
+    payment.checkout_request_id = attempt.checkout_request_id
+    payment.merchant_request_id = attempt.merchant_request_id
     payment.save()
 
     return Response({
@@ -283,26 +304,14 @@ def mpesa_callback(request):
             return Response({"ResultCode": 1, "ResultDesc": "Invalid callback fields"}, status=400)
 
         with transaction.atomic():
-            payment = (
-                Payment.objects
-                .select_for_update()
-                .select_related("order")
-                .filter(checkout_request_id=checkout_request_id)
-                .first()
-            )
-
-            if not payment:
-                return Response({
-                    "ResultCode": 1,
-                    "ResultDesc": "Payment not found",
-                })
-
-            # Repeated success callbacks must not dispense twice.
-            if payment.status == "SUCCESS":
-                return Response({
-                    "ResultCode": 0,
-                    "ResultDesc": "Already processed",
-                })
+            attempt = PaymentAttempt.objects.filter(checkout_request_id=checkout_request_id).first()
+            if not attempt:
+                return Response({"ResultCode": 1, "ResultDesc": "Payment attempt not found"}, status=404)
+            # Use the same payment lock as initiation to serialize attempt updates.
+            payment = Payment.objects.select_for_update().get(pk=attempt.payment_id)
+            attempt = PaymentAttempt.objects.select_for_update().get(pk=attempt.pk)
+            if attempt.status == "SUCCESS":
+                return Response({"ResultCode": 0, "ResultDesc": "Already processed"})
 
             order = payment.order
 
@@ -323,12 +332,25 @@ def mpesa_callback(request):
                     amount = Decimal("NaN")
                 receipt = metadata.get("MpesaReceiptNumber")
                 if (
-                    not amount.is_finite() or amount <= 0 or amount != payment.amount
+                    not amount.is_finite() or amount <= 0 or amount != attempt.amount
                     or not isinstance(receipt, str) or not receipt.strip()
                     or len(receipt) > 50
                 ):
                     return Response({"ResultCode": 1, "ResultDesc": "Payment amount or receipt invalid"}, status=400)
 
+                attempt.status = "SUCCESS"
+                attempt.mpesa_receipt_number = receipt.strip()
+                attempt.result_code = result_code
+                attempt.result_description = stk.get("ResultDesc", "")
+                attempt.paid_at = timezone.now()
+                attempt.save()
+                # Record a second paid attempt without charging stock twice.
+                if payment.status == "SUCCESS":
+                    return Response({"ResultCode": 0, "ResultDesc": "Additional payment recorded; operator review required"})
+
+                payment.checkout_request_id = attempt.checkout_request_id
+                payment.merchant_request_id = attempt.merchant_request_id
+                payment.phone_number = attempt.phone_number
                 payment.status = "SUCCESS"
                 payment.mpesa_receipt_number = receipt.strip()
                 payment.result_code = result_code
@@ -371,6 +393,12 @@ def mpesa_callback(request):
                         )
 
             else:
+                attempt.status = "FAILED"
+                attempt.result_code = result_code
+                attempt.result_description = stk.get("ResultDesc", "")
+                attempt.save()
+                if payment.status == "SUCCESS" or payment.attempts.filter(status__in=["PROCESSING", "UNKNOWN"]).exists():
+                    return Response({"ResultCode": 0, "ResultDesc": "Attempt result recorded"})
                 payment.status = "FAILED"
                 payment.result_code = result_code
                 payment.result_description = stk.get("ResultDesc", "")

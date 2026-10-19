@@ -1,7 +1,23 @@
 
 from django.contrib import admin
 
-from .models import Product, Order, Payment, DispenseRequest
+from .models import Product, Order, Payment, PaymentAttempt, DispenseRequest
+
+
+@admin.register(PaymentAttempt)
+class PaymentAttemptAdmin(admin.ModelAdmin):
+    list_display = ("payment", "status", "amount", "checkout_request_id", "created_at")
+    list_filter = ("status", "created_at")
+    search_fields = ("payment__order__reference", "checkout_request_id", "mpesa_receipt_number")
+
+    def get_readonly_fields(self, request, obj=None):
+        return [field.name for field in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Product)

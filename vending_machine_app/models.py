@@ -118,6 +118,32 @@ class Payment(models.Model):
         return f"{self.order.reference} - {self.status}"
 
 
+class PaymentAttempt(models.Model):
+    """One STK request; keep its identifiers even after another attempt starts."""
+
+    class Status(models.TextChoices):
+        PROCESSING = "PROCESSING", "Processing"
+        UNKNOWN = "UNKNOWN", "Awaiting reconciliation"
+        SUCCESS = "SUCCESS", "Successful"
+        FAILED = "FAILED", "Failed"
+
+    id = models.BigAutoField(primary_key=True)
+    payment = models.ForeignKey(Payment, on_delete=models.PROTECT, related_name="attempts")
+    phone_number = models.CharField(max_length=15)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PROCESSING)
+    checkout_request_id = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    merchant_request_id = models.CharField(max_length=100, blank=True)
+    mpesa_receipt_number = models.CharField(max_length=50, blank=True)
+    result_code = models.CharField(max_length=20, blank=True)
+    result_description = models.TextField(blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+
+
 class DispenseRequest(models.Model):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
