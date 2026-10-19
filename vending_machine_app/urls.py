@@ -4,8 +4,10 @@ from . import views
 from .api_views.order import *
 from .api_views.payment import *
 from .api_views.product import *
+from .api_views.reports import sales_summary
 
 urlpatterns = [
+    path("reports/sales/", sales_summary, name="sales-summary"),
     path('', views.index, name='index'),
 
     path("products/", product_list, name="product-list"),
