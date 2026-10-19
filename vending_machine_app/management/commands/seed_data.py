@@ -5,7 +5,7 @@ from decimal import Decimal
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from vending_machine_app.models import Product
+from vending_machine_app.models import Machine, Product
 
 
 PRODUCTS = (
@@ -22,12 +22,20 @@ class Command(BaseCommand):
         "so their prices, stock and availability remain unchanged."
     )
 
+    def add_arguments(self, parser):
+        parser.add_argument("--machine", default="MACHINE-001", help="Existing machine code to seed")
+
     @transaction.atomic
     def handle(self, *args, **options):
+        from django.core.management.base import CommandError
+        try:
+            machine = Machine.objects.get(code=options["machine"])
+        except Machine.DoesNotExist:
+            raise CommandError("Create the machine in Django admin before seeding it.")
         created_count = 0
         for slot, name, description, price, volume in PRODUCTS:
             product, created = Product.objects.get_or_create(
-                machine_slot=slot,
+                machine=machine, machine_slot=slot,
                 defaults={
                     "name": name,
                     "description": description,

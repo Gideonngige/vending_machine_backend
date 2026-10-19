@@ -1,5 +1,6 @@
 from .common_imports import *
 from .helper import *
+from vending_machine_app.models import Machine
 
 
 @csrf_exempt
@@ -7,7 +8,7 @@ from .helper import *
 def create_order(request):
     body = json_body(request)
 
-    if body is None:
+    if not isinstance(body, dict):
         return error_response("Invalid JSON body.")
 
     try:
@@ -25,10 +26,15 @@ def create_order(request):
         return error_response("Enter a valid Kenyan phone number.")
 
     with transaction.atomic():
+        machine = get_object_or_404(
+            Machine.objects.select_for_update(),
+            code=body.get("machine_code", "MACHINE-001"), is_enabled=True,
+        )
         product = get_object_or_404(
             Product.objects.select_for_update(),
             id=product_id,
             is_available=True,
+            machine=machine,
         )
 
         if product.stock_quantity < quantity:
@@ -38,6 +44,7 @@ def create_order(request):
 
         order = Order.objects.create(
             product=product,
+            machine=machine,
             product_name=product.name,
             unit_price=product.price,
             quantity=quantity,
@@ -75,8 +82,11 @@ def create_order(request):
 
 @api_view(["GET"])
 def order_detail(request, reference):
+    orders = Order.objects.select_related("product", "machine")
+    if request.query_params.get("machine"):
+        orders = orders.filter(machine__code=request.query_params["machine"])
     order = get_object_or_404(
-        Order.objects.select_related("product"),
+        orders,
         reference=reference,
     )
 
@@ -93,7 +103,7 @@ def order_detail(request, reference):
 def collect_order(request, reference):
     body = json_body(request)
 
-    if body is None:
+    if not isinstance(body, dict):
         return error_response("Invalid JSON body.")
 
     # In a real machine, protect this operation with machine

@@ -1,9 +1,11 @@
 from .common_imports import *
+from vending_machine_app.models import Machine
 
 
 @api_view(["GET"])
 def product_list(request):
-    products = Product.objects.filter(is_available=True)
+    machine = get_object_or_404(Machine, code=request.query_params.get("machine", "MACHINE-001"), is_enabled=True)
+    products = Product.objects.filter(is_available=True, machine=machine)
 
     data = [
         {
@@ -14,6 +16,7 @@ def product_list(request):
             "image_url": product.image_url,
             "volume_ml": product.volume_ml,
             "machine_slot": product.machine_slot,
+            "machine_code": machine.code,
             "available": product.stock_quantity > 0,
         }
         for product in products

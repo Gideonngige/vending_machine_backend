@@ -235,6 +235,9 @@ def initiate_coffee_payment(request, reference):
             "message": "This order has already been paid.",
         }, status=400)
 
+    if not order.machine.is_enabled:
+        return Response({"success": False, "message": "This machine is disabled."}, status=400)
+
     if payment.attempts.filter(status__in=["PROCESSING", "UNKNOWN"]).exists():
         return Response({"success": False, "message": "A payment attempt is still pending. Check this order before retrying."}, status=409)
 

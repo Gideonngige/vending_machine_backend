@@ -1,7 +1,7 @@
 
 from django.contrib import admin
 
-from .models import Product, Order, Payment, PaymentAttempt, DispenseRequest
+from .models import Product, Order, Payment, PaymentAttempt, DispenseRequest, Machine
 
 
 @admin.register(PaymentAttempt)
@@ -20,17 +20,28 @@ class PaymentAttemptAdmin(admin.ModelAdmin):
         return False
 
 
+@admin.register(Machine)
+class MachineAdmin(admin.ModelAdmin):
+    list_display = ("code", "name", "location", "is_enabled")
+    search_fields = ("code", "name", "location")
+    list_filter = ("is_enabled",)
+
+
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
     list_display = (
         "name",
+        "machine",
         "price",
         "machine_slot",
         "stock_quantity",
         "is_available",
     )
-    list_filter = ("is_available",)
+    list_filter = ("machine", "is_available")
     search_fields = ("name",)
+
+    def get_readonly_fields(self, request, obj=None):
+        return ("machine",) if obj else ()
 
 
 @admin.register(Order)
@@ -43,9 +54,9 @@ class OrderAdmin(admin.ModelAdmin):
         "status",
         "created_at",
     )
-    list_filter = ("status", "created_at")
+    list_filter = ("machine", "status", "created_at")
     search_fields = ("reference", "customer_phone", "product_name")
-    readonly_fields = ("reference", "created_at", "updated_at")
+    readonly_fields = ("reference", "machine", "created_at", "updated_at")
 
 
 @admin.register(Payment)

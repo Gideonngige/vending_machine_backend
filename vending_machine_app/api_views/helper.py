@@ -33,6 +33,7 @@ def order_payload(order):
 
     return {
         "reference": order.reference,
+        "machine_code": order.machine.code,
         "product_id": order.product_id,
         "product_name": order.product_name,
         "unit_price": str(order.unit_price),

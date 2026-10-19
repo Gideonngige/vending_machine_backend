@@ -3,15 +3,19 @@ from unittest.mock import patch
 
 from django.test import TestCase, TransactionTestCase
 from django.db import connection
+from django.db import IntegrityError, transaction
+from django.core.management import call_command
+from io import StringIO
 from django.db.migrations.executor import MigrationExecutor
 
-from .models import DispenseRequest, Order, Payment, PaymentAttempt, Product
+from .models import DispenseRequest, Order, Payment, PaymentAttempt, Product, Machine
 
 
 class PaymentCallbackTests(TestCase):
     def setUp(self):
+        self.machine = Machine.objects.get(code="MACHINE-001")
         self.product = Product.objects.create(
-            name="Espresso", price=Decimal("100"), machine_slot=1,
+            machine=self.machine, name="Espresso", price=Decimal("100"), machine_slot=1,
             stock_quantity=10,
         )
         self.order = Order.objects.create(
@@ -172,6 +176,19 @@ class PaymentCallbackTests(TestCase):
         self.assertEqual(self.payment.status, Payment.Status.SUCCESS)
 
     @patch("vending_machine_app.api_views.payment.lipa_na_mpesa")
+    def test_disabled_machine_blocks_stk_request(self, send):
+        self.attempt.status = PaymentAttempt.Status.FAILED
+        self.attempt.save()
+        self.machine.is_enabled = False
+        self.machine.save()
+        response = self.client.post(
+            f"/api/v1/payments/{self.order.reference}/stk-push/",
+            {"phone_number": self.payment.phone_number}, content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        send.assert_not_called()
+
+    @patch("vending_machine_app.api_views.payment.lipa_na_mpesa")
     def test_uncertain_request_blocks_retry(self, send):
         self.attempt.status = PaymentAttempt.Status.FAILED
         self.attempt.save()
@@ -212,5 +229,79 @@ class PaymentAttemptMigrationTests(TransactionTestCase):
             self.assertEqual(attempt.checkout_request_id, "legacy-checkout")
             self.assertEqual(attempt.mpesa_receipt_number, "LEGACYRECEIPT")
             self.assertEqual(attempt.status, "SUCCESS")
+            latest = [("vending_machine_app", "0003_machine_identity")]
+            executor = MigrationExecutor(connection)
+            executor.migrate(latest)
+            apps = executor.loader.project_state(latest).apps
+            assigned_order = apps.get_model("vending_machine_app", "Order").objects.get(pk=order.pk)
+            assigned_product = apps.get_model("vending_machine_app", "Product").objects.get(pk=product.pk)
+            self.assertEqual(assigned_order.machine.code, "MACHINE-001")
+            self.assertEqual(assigned_product.machine_id, assigned_order.machine_id)
         finally:
-            MigrationExecutor(connection).migrate(new_target)
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class MachineIsolationTests(TestCase):
+    def setUp(self):
+        self.first = Machine.objects.get(code="MACHINE-001")
+        self.second = Machine.objects.create(code="MACHINE-002", name="Campus")
+        self.product = Product.objects.create(
+            machine=self.first, name="Espresso", price=100, machine_slot=1,
+        )
+        self.other = Product.objects.create(
+            machine=self.second, name="Latte", price=150, machine_slot=1,
+        )
+
+    def test_slots_are_unique_within_each_machine(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Product.objects.create(machine=self.first, name="Duplicate", price=100, machine_slot=1)
+        self.assertEqual(Product.objects.filter(machine_slot=1).count(), 2)
+
+    def test_menu_is_scoped_to_machine(self):
+        default = self.client.get("/api/v1/products/").json()["products"]
+        other = self.client.get("/api/v1/products/?machine=MACHINE-002").json()["products"]
+        self.assertEqual([p["id"] for p in default], [self.product.pk])
+        self.assertEqual([p["id"] for p in other], [self.other.pk])
+
+    def test_order_cannot_select_another_machines_product(self):
+        response = self.client.post("/api/v1/orders/", {
+            "machine_code": self.first.code, "product_id": self.other.pk,
+            "quantity": 1, "phone": "0712345678",
+        }, content_type="application/json")
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(Order.objects.exists())
+
+    def test_order_and_dispense_are_linked_to_selected_machine(self):
+        response = self.client.post("/api/v1/orders/", {
+            "machine_code": self.second.code, "product_id": self.other.pk,
+            "quantity": 1, "phone": "0712345678",
+        }, content_type="application/json")
+        self.assertEqual(response.status_code, 201)
+        order = Order.objects.get()
+        self.assertEqual(order.machine, self.second)
+        self.assertEqual(order.dispense_request.order.machine, self.second)
+        self.assertEqual(response.json()["order"]["machine_code"], self.second.code)
+        self.assertEqual(self.client.get(
+            f"/api/v1/orders/{order.reference}/?machine=MACHINE-001",
+        ).status_code, 404)
+
+    def test_disabled_machine_cannot_sell(self):
+        self.second.is_enabled = False
+        self.second.save()
+        self.assertEqual(self.client.get("/api/v1/products/?machine=MACHINE-002").status_code, 404)
+        response = self.client.post("/api/v1/orders/", {
+            "machine_code": self.second.code, "product_id": self.other.pk,
+            "phone": "0712345678",
+        }, content_type="application/json")
+        self.assertEqual(response.status_code, 404)
+
+    def test_seeding_preserves_stock_and_does_not_cross_machines(self):
+        self.product.stock_quantity = 7
+        self.product.save()
+        call_command("seed_data", machine=self.first.code, stdout=StringIO())
+        call_command("seed_data", machine=self.second.code, stdout=StringIO())
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, 7)
+        self.assertEqual(self.first.products.count(), 4)
+        self.assertEqual(self.second.products.count(), 4)
