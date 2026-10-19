@@ -263,7 +263,6 @@ def initiate_coffee_payment(request, reference):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def mpesa_callback(request):
-    print("Received M-Pesa callback:", request.data)
     try:
         stk = (
             request.data
@@ -315,7 +314,7 @@ def mpesa_callback(request):
                 }
 
                 payment.status = "SUCCESS"
-                payment.receipt = metadata.get("MpesaReceiptNumber")
+                payment.mpesa_receipt_number = metadata.get("MpesaReceiptNumber", "")
                 payment.result_code = result_code
                 payment.result_description = stk.get("ResultDesc", "")
                 payment.paid_at = timezone.now()
@@ -331,9 +330,8 @@ def mpesa_callback(request):
                     .first()
                 )
 
-                if dispense:
-                    dispense.status = "READY"
-                    dispense.save(update_fields=["status"])
+                # Payment authorizes preparation; only machine feedback can
+                # establish that coffee is ready. Leave dispensing pending.
 
                 # Decrement stock only on the first successful callback.
 
@@ -375,7 +373,6 @@ def mpesa_callback(request):
         logging.getLogger(__name__).exception(
             "M-Pesa callback processing failed."
         )
-        print("Error processing M-Pesa callback:", traceback.format_exc())
         return Response({
             "ResultCode": 1,
             "ResultDesc": "Server error",
