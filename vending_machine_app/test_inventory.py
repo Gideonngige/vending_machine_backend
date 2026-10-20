@@ -18,6 +18,9 @@ from .models import Machine, Product, Order, Payment, PaymentAttempt, StockReser
 
 class ReservationTests(TestCase):
     def setUp(self):
+        self.automatic_check = patch("vending_machine_app.api_views.payment.reconcile_attempt")
+        self.automatic_check.start()
+        self.addCleanup(self.automatic_check.stop)
         self.machine = Machine.objects.get(code="MACHINE-001")
         self.product = Product.objects.create(machine=self.machine, name="Coffee", price=100, machine_slot=1, stock_quantity=1)
 

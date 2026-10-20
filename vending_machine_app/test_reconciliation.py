@@ -21,6 +21,9 @@ from .reconciliation import reconcile_attempt
 
 class ReconciliationFixture:
     def setUp(self):
+        self.automatic_check = patch("vending_machine_app.api_views.payment.reconcile_attempt")
+        self.automatic_check.start()
+        self.addCleanup(self.automatic_check.stop)
         machine = Machine.objects.get(code="MACHINE-001")
         self.product = Product.objects.create(machine=machine, name="Coffee", price=100, machine_slot=1, stock_quantity=2)
         self.order = Order.objects.create(product=self.product, customer_phone="254712345678")
@@ -270,3 +273,61 @@ class ConcurrentVerificationTests(TransactionTestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.stock_quantity, 1)
         self.assertEqual(self.payment.attempts.filter(verification_status="VERIFIED").count(), 2)
+
+
+class AutomaticCallbackVerificationTests(ReconciliationFixture, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.automatic_check.stop()
+
+    def test_callback_queries_provider_and_settles_without_worker(self):
+        with patch("vending_machine_app.reconciliation.query_stk", return_value={
+            "state": "SUCCESS", "code": "0", "message": "Verified by provider",
+        }) as query:
+            self.assertEqual(self.callback().status_code, 200)
+            self.assertEqual(self.callback().status_code, 200)
+        self.payment.refresh_from_db(); self.product.refresh_from_db()
+        self.assertEqual(query.call_count, 1)
+        self.assertEqual(self.payment.status, "SUCCESS")
+        self.assertIsNotNone(self.payment.verified_at)
+        self.assertEqual(self.product.stock_quantity, 1)
+
+    def test_callback_success_hint_cannot_overrule_provider_failure(self):
+        with patch("vending_machine_app.reconciliation.query_stk", return_value={
+            "state": "FAILED", "code": "1032", "message": "Provider confirmed cancellation",
+        }):
+            self.assertEqual(self.callback().status_code, 200)
+        self.payment.refresh_from_db(); self.product.refresh_from_db()
+        self.assertEqual(self.payment.status, "FAILED")
+        self.assertEqual(self.product.stock_quantity, 2)
+
+    def test_outage_is_acknowledged_and_duplicates_respect_cooldown(self):
+        with patch("vending_machine_app.reconciliation.query_stk", return_value={
+            "state": "ERROR", "message": "Provider unavailable",
+        }) as query:
+            self.assertEqual(self.callback().status_code, 200)
+            self.assertEqual(self.callback().status_code, 200)
+            self.assertEqual(query.call_count, 1)
+        self.payment.refresh_from_db(); self.attempt.refresh_from_db()
+        self.assertNotEqual(self.payment.status, "SUCCESS")
+        self.assertEqual(self.attempt.verification_status, "ERROR")
+        self.assertIsNotNone(self.attempt.callback_received_at)
+        self.assertIsNotNone(self.attempt.next_check_at)
+
+    def test_duplicate_callback_can_recover_when_next_check_is_due(self):
+        with patch("vending_machine_app.reconciliation.query_stk", return_value={"state": "PENDING", "message": "Pending"}):
+            self.callback()
+        PaymentAttempt.objects.filter(pk=self.attempt.pk).update(next_check_at=timezone.now()-timedelta(seconds=1))
+        with patch("vending_machine_app.reconciliation.query_stk", return_value={"state": "SUCCESS", "code": "0", "message": "Verified"}):
+            self.callback()
+        self.payment.refresh_from_db()
+        self.assertEqual(self.payment.status, "SUCCESS")
+
+    def test_unexpected_verification_error_keeps_callback_for_recovery(self):
+        with patch("vending_machine_app.api_views.payment.reconcile_attempt", side_effect=RuntimeError("private internals")):
+            response = self.callback()
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("private internals", str(response.content))
+        self.attempt.refresh_from_db()
+        self.assertIsNotNone(self.attempt.callback_received_at)
+        self.assertIsNone(self.attempt.verified_at)

@@ -14,6 +14,9 @@ from .models import DispenseRequest, Order, Payment, PaymentAttempt, Product, Ma
 
 class PaymentCallbackTests(TestCase):
     def setUp(self):
+        self.automatic_check = patch("vending_machine_app.api_views.payment.reconcile_attempt")
+        self.automatic_check.start()
+        self.addCleanup(self.automatic_check.stop)
         self.machine = Machine.objects.get(code="MACHINE-001")
         self.product = Product.objects.create(
             machine=self.machine, name="Espresso", price=Decimal("100"), machine_slot=1,

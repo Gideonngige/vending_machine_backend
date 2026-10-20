@@ -9,9 +9,9 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from vending_machine_app.models import PaymentAttempt, Payment, Order, Product, DispenseRequest
+from vending_machine_app.models import PaymentAttempt, Payment, Order, Product
 from vending_machine_app.inventory import reserve, release
-from vending_machine_app.reconciliation import unsettled_attempts
+from vending_machine_app.reconciliation import unsettled_attempts, reconcile_attempt
 from vending_machine_app.daraja import get_daraja_urls, get_access_token, stk_credentials, environment
 
 logger = logging.getLogger(__name__)
@@ -155,8 +155,6 @@ def lipa_na_mpesa(phone_number, amount, order_reference):
         }
 
 
-
-
 @api_view(["POST"])
 @permission_classes([AllowAny])
 @transaction.atomic
@@ -255,8 +253,6 @@ def initiate_coffee_payment(request, reference):
     })
 
 
-
-
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def mpesa_callback(request):
@@ -293,22 +289,30 @@ def mpesa_callback(request):
             return Response({"ResultCode": 1, "ResultDesc": "Payment attempt not found"}, status=404)
         if code == 0 and (amount <= 0 or amount != attempt.amount):
             return Response({"ResultCode": 1, "ResultDesc": "Payment amount or receipt invalid"}, status=400)
-        if attempt.callback_received_at and (attempt.callback_receipt_number or code != 0):
-            return Response({"ResultCode": 0, "ResultDesc": "Already recorded; verification queued or completed"})
         if attempt.merchant_request_id and stk.get("MerchantRequestID", attempt.merchant_request_id) != attempt.merchant_request_id:
             return Response({"ResultCode": 1, "ResultDesc": "Merchant request mismatch"}, status=400)
-        attempt.callback_received_at = timezone.now()
-        attempt.callback_result_code = str(code)
-        attempt.callback_amount = amount
-        attempt.callback_receipt_number = receipt.strip()
-        if not attempt.verified_at:
-            attempt.verification_status = "PENDING"
-        if attempt.next_check_at is None:
-            attempt.next_check_at = timezone.now()
-        attempt.save()
+        duplicate = attempt.callback_received_at and (attempt.callback_receipt_number or code != 0)
+        if not duplicate:
+            attempt.callback_received_at = timezone.now()
+            attempt.callback_result_code = str(code)
+            attempt.callback_amount = amount
+            attempt.callback_receipt_number = receipt.strip()
+            if not attempt.verified_at:
+                attempt.verification_status = "PENDING"
+            if attempt.next_check_at is None:
+                attempt.next_check_at = timezone.now()
+            attempt.save()
     # A late receipt is reported metadata only, never payment proof. This update
     # happens after releasing the attempt lock to preserve settlement lock order.
     if code == 0:
         Payment.objects.filter(pk=attempt.payment_id, checkout_request_id=checkout,
                                verified_at__isnull=False, mpesa_receipt_number="").update(mpesa_receipt_number=receipt.strip())
-    return Response({"ResultCode": 0, "ResultDesc": "Recorded; awaiting independent verification"})
+    # Query outside the callback's database lock. The reconciler owns cooldowns,
+    # leases, and settlement; duplicate deliveries cannot bypass those protections.
+    try:
+        reconcile_attempt(attempt.pk)
+    except Exception:
+        # The callback is durably recorded. Do not invite a provider retry storm
+        # or expose provider/database internals; scheduled reconciliation can recover.
+        logger.error("Automatic callback verification failed; reconciliation required.")
+    return Response({"ResultCode": 0, "ResultDesc": "Recorded; independent verification requested"})
