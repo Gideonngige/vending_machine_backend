@@ -6,8 +6,13 @@ from .api_views.payment import initiate_coffee_payment, mpesa_callback
 from .api_views.product import product_list
 from .api_views.reports import sales_summary
 from . import auth_views
+from .api_views import management
 
 urlpatterns = [
+    path("management/machines/", management.machines),
+    path("management/machines/<int:pk>/", management.update_machine),
+    path("management/products/", management.products),
+    path("management/products/<int:pk>/", management.update_product),
     path("auth/me/", auth_views.current_staff),
     path("auth/refresh/", auth_views.staff_refresh),
     path("auth/login/", auth_views.staff_login),

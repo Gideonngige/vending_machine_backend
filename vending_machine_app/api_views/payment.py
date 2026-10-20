@@ -390,7 +390,7 @@ def mpesa_callback(request):
 
                 if product.stock_quantity >= order.quantity:
                     product.stock_quantity -= order.quantity
-                    product.save(update_fields=["stock_quantity"])
+                    product.save(update_fields=["stock_quantity", "updated_at"])
                 else:
                     # Payment succeeded, but there is insufficient stock.
                     # Do not pretend the coffee has been dispensed.
