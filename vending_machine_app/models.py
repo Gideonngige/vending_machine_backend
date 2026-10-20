@@ -1,6 +1,7 @@
 
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 
@@ -224,3 +225,24 @@ class DispenseRequest(models.Model):
 
     def __str__(self):
         return f"{self.order.reference} - {self.status}"
+
+
+class DispenseEvent(models.Model):
+    """Immutable observations; command ID remains the dispense request ID."""
+    dispense = models.ForeignKey(DispenseRequest, on_delete=models.PROTECT, related_name="events")
+    event_id = models.UUIDField(unique=True)
+    state = models.CharField(max_length=20, choices=DispenseRequest.Status.choices)
+    source = models.CharField(max_length=20)
+    message = models.CharField(max_length=1000, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class RecoveryNote(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name="recovery_notes")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    action = models.CharField(max_length=30, choices=[
+        ("INVESTIGATING", "Investigating"), ("REFUND_REQUIRED", "Refund required"),
+        ("REFUND_RECORDED", "External refund recorded"), ("RESOLVED", "Resolved"),
+    ])
+    note = models.CharField(max_length=1000)
+    created_at = models.DateTimeField(auto_now_add=True)

@@ -2,7 +2,6 @@ from django.conf import settings
 from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from rest_framework.decorators import api_view
 
 from vending_machine_app.models import Machine, Product, Order, Payment, DispenseRequest
@@ -119,31 +118,13 @@ def collect_order(request, reference):
             status=403,
         )
 
-    with transaction.atomic():
-        order = get_object_or_404(
-            Order.objects.select_for_update(),
-            reference=reference,
-        )
-        dispense = DispenseRequest.objects.select_for_update().get(
-            order=order
-        )
-
-        payment = getattr(order, "payment", None)
-        if not payment or payment.status != "SUCCESS" or not payment.verified_at:
-            return error_response("Payment must be independently verified before collection.", status=409)
-
-        if order.status != Order.Status.READY:
-            return error_response(
-                "This order is not ready for collection.",
-                status=409,
-            )
-
-        dispense.status = DispenseRequest.Status.COLLECTED
-        dispense.collected_at = timezone.now()
-        dispense.save()
-
-        order.status = Order.Status.COLLECTED
-        order.save()
+    from uuid import uuid4
+    from vending_machine_app.dispensing import record_event, TransitionError
+    get_object_or_404(Order, reference=reference)
+    try:
+        order = record_event(reference, "COLLECTED", body.get("event_id") or uuid4(), source="development_collection")
+    except (TransitionError, ValueError, DispenseRequest.DoesNotExist) as exc:
+        return error_response(str(exc), status=409)
 
     return JsonResponse({
         "success": True,

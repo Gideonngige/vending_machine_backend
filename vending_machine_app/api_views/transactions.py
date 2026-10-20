@@ -75,6 +75,13 @@ def transaction_data(order, detail=False):
         },
     }
     if detail:
+        data["recovery_notes"] = [{"id": n.pk, "action": n.action, "note": n.note,
+                                   "actor": n.actor.get_username(), "created_at": n.created_at}
+                                  for n in order.recovery_notes.select_related("actor").order_by("-id")]
+        data["dispense_events"] = [] if not dispense else [{
+            "event_id": e.event_id, "state": e.state, "source": e.source,
+            "message": e.message, "created_at": e.created_at,
+        } for e in dispense.events.order_by("id")]
         data["attempts"] = [] if not payment else [{
             "id": attempt.pk, "status": attempt.status, "amount": str(attempt.amount),
             "phone_number": attempt.phone_number, "checkout_request_id": attempt.checkout_request_id,
@@ -156,3 +163,25 @@ def transaction_detail(request, reference):
 def reconcile_payment_attempt(request, pk):
     get_object_or_404(PaymentAttempt, pk=pk)
     return Response(reconcile_attempt(pk))
+
+
+class RecoveryInput(serializers.Serializer):
+    action = serializers.ChoiceField(choices=["INVESTIGATING", "REFUND_REQUIRED", "REFUND_RECORDED", "RESOLVED"])
+    note = serializers.CharField(max_length=1000, allow_blank=False)
+
+
+@never_cache
+@api_view(["POST"])
+@permission_classes([IsAdminUser])
+def add_recovery_note(request, reference):
+    from django.db import transaction
+    from vending_machine_app.models import RecoveryNote
+    values = RecoveryInput(data=request.data)
+    values.is_valid(raise_exception=True)
+    with transaction.atomic():
+        order = get_object_or_404(Order.objects.select_for_update(), reference=reference)
+        payment = Payment.objects.filter(order=order, status="SUCCESS").first()
+        if not payment:
+            raise serializers.ValidationError("Recovery records require a recorded successful payment.")
+        note = RecoveryNote.objects.create(order=order, actor=request.user, **values.validated_data)
+    return Response({"id": note.pk, "message": "Recovery note recorded. No refund or dispensing command was issued."}, status=201)

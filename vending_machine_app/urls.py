@@ -8,9 +8,10 @@ from .api_views.product import product_list
 from .api_views.reports import sales_summary
 from . import auth_views
 from .api_views import management
-from .api_views.transactions import transaction_list, transaction_detail, reconcile_payment_attempt
+from .api_views.transactions import transaction_list, transaction_detail, reconcile_payment_attempt, add_recovery_note
 
 urlpatterns = [
+    path("management/transactions/<str:reference>/recovery/", add_recovery_note),
     path("management/payment-attempts/<int:pk>/reconcile/", reconcile_payment_attempt),
     path("health/", health, name="health"),
     path("ready/", ready, name="ready"),

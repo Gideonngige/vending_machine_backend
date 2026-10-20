@@ -56,7 +56,7 @@ class OrderAdmin(admin.ModelAdmin):
     )
     list_filter = ("machine", "status", "created_at")
     search_fields = ("reference", "customer_phone", "product_name")
-    readonly_fields = ("reference", "machine", "created_at", "updated_at")
+    readonly_fields = ("reference", "machine", "status", "created_at", "updated_at")
 
 
 @admin.register(Payment)
@@ -88,6 +88,15 @@ class PaymentAdmin(admin.ModelAdmin):
 
 @admin.register(DispenseRequest)
 class DispenseRequestAdmin(admin.ModelAdmin):
+    def get_readonly_fields(self, request, obj=None):
+        return [field.name for field in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
     list_display = (
         "order",
         "machine_slot",
