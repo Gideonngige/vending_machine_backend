@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 
 from vending_machine_app.models import Machine, Product
+from vending_machine_app.inventory import held_quantity
 
 
 class MachineSerializer(serializers.ModelSerializer):
@@ -25,6 +26,8 @@ class MachineSerializer(serializers.ModelSerializer):
 
 class ProductSerializer(serializers.ModelSerializer):
     machine_code = serializers.CharField(source="machine.code", read_only=True)
+    reserved_quantity = serializers.SerializerMethodField()
+    available_quantity = serializers.SerializerMethodField()
     expected_updated_at = serializers.DateTimeField(write_only=True, required=False)
     price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("1"))
     stock_quantity = serializers.IntegerField(min_value=0, max_value=2147483647)
@@ -35,8 +38,14 @@ class ProductSerializer(serializers.ModelSerializer):
         model = Product
         fields = ("id", "machine", "machine_code", "name", "description", "price",
                   "image_url", "volume_ml", "stock_quantity", "machine_slot", "is_available",
-                  "updated_at", "expected_updated_at")
+                  "updated_at", "expected_updated_at", "reserved_quantity", "available_quantity")
         read_only_fields = ("id", "updated_at")
+
+    def get_reserved_quantity(self, obj):
+        return held_quantity(obj)
+
+    def get_available_quantity(self, obj):
+        return max(0, obj.stock_quantity - held_quantity(obj))
 
     def validate_price(self, value):
         if value != value.to_integral_value():
@@ -48,6 +57,8 @@ class ProductSerializer(serializers.ModelSerializer):
         if self.instance:
             if expected != self.instance.updated_at:
                 raise serializers.ValidationError({"detail": "This product changed since you loaded it. Reload the catalog before editing again."})
+            if attrs.get("stock_quantity", self.instance.stock_quantity) < held_quantity(self.instance):
+                raise serializers.ValidationError({"stock_quantity": "Physical stock cannot be lower than active reservations."})
             if attrs.get("machine", self.instance.machine) != self.instance.machine:
                 raise serializers.ValidationError({"machine": "Create a separate product for a different machine."})
             if attrs.get("machine_slot", self.instance.machine_slot) != self.instance.machine_slot and self.instance.orders.exclude(

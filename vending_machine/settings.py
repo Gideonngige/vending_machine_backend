@@ -150,6 +150,7 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 
 USE_TZ = True
+STOCK_RESERVATION_MINUTES = max(1, int(os.getenv('STOCK_RESERVATION_MINUTES', '10')))
 
 
 # Static files (CSS, JavaScript, Images)

@@ -2,6 +2,7 @@ import json
 import re
 
 from django.http import JsonResponse
+from django.utils import timezone
 
 
 def normalize_phone(value):
@@ -33,6 +34,7 @@ def error_response(message, status=400):
 def order_payload(order):
     payment = getattr(order, "payment", None)
     dispense = getattr(order, "dispense_request", None)
+    hold = getattr(order, "stock_reservation", None)
 
     return {
         "reference": order.reference,
@@ -45,6 +47,10 @@ def order_payload(order):
         "customer_phone": order.customer_phone,
         "status": order.status,
         "created_at": order.created_at.isoformat(),
+        "reservation": None if not hold else {
+            "status": "EXPIRED" if hold.status == "ACTIVE" and hold.expires_at <= timezone.now() else hold.status,
+            "quantity": hold.quantity, "expires_at": hold.expires_at.isoformat(),
+        },
         "payment": {
             "status": payment.status if payment else None,
             "method": payment.method if payment else None,

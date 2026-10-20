@@ -1,4 +1,5 @@
 from datetime import datetime, timezone as dt_timezone
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -39,7 +40,9 @@ class SalesReportTests(TestCase):
         self.client.force_login(self.staff)
         self.client.defaults["HTTP_AUTHORIZATION"] = f"Bearer {AccessToken.for_user(self.staff)}"
         data = self.client.get(self.url).json()
-        self.assertEqual(data["today"], {"revenue": "300", "paid_orders": 2, "coffees_dispensed": 2})
+        self.assertEqual(Decimal(data["today"]["revenue"]), Decimal("300.00"))
+        self.assertEqual(data["today"]["paid_orders"], 2)
+        self.assertEqual(data["today"]["coffees_dispensed"], 2)
         self.assertEqual(data["by_product"][0]["paid_orders"], 2)
 
     def test_machine_filter_and_missing_machine(self):
@@ -50,7 +53,7 @@ class SalesReportTests(TestCase):
         self.client.force_login(self.staff)
         self.client.defaults["HTTP_AUTHORIZATION"] = f"Bearer {AccessToken.for_user(self.staff)}"
         data = self.client.get(self.url, {"machine": "SECOND"}).json()
-        self.assertEqual(data["all_time"]["revenue"], "50")
+        self.assertEqual(Decimal(data["all_time"]["revenue"]), Decimal("50.00"))
         self.assertEqual(len(data["by_machine"]), 1)
         self.assertEqual(self.client.get(self.url, {"machine": "MISSING"}).status_code, 404)
 

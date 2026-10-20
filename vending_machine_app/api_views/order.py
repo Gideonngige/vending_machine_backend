@@ -6,6 +6,7 @@ from django.utils import timezone
 from rest_framework.decorators import api_view
 
 from vending_machine_app.models import Machine, Product, Order, Payment, DispenseRequest
+from vending_machine_app.inventory import available_quantity, reserve, release
 from .helper import json_body, normalize_phone, error_response, order_payload
 
 
@@ -42,8 +43,8 @@ def create_order(request):
             machine=machine,
         )
 
-        if product.stock_quantity < quantity:
-            return error_response("This product is currently out of stock.")
+        if available_quantity(product) < quantity:
+            return error_response("This product is currently out of stock or reserved.", status=409)
 
         total = product.price * quantity
 
@@ -57,6 +58,8 @@ def create_order(request):
             customer_phone=phone,
             status=Order.Status.PENDING,
         )
+
+        reserve(order, product)
 
         Payment.objects.create(
             order=order,
@@ -142,3 +145,22 @@ def collect_order(request, reference):
         "message": "Order marked as collected.",
         "order": order_payload(order),
     })
+
+@api_view(["POST"])
+def cancel_order(request, reference):
+    # Lock in the same product -> order -> payment order as callbacks.
+    found = get_object_or_404(Order, reference=reference)
+    with transaction.atomic():
+        product = Product.objects.select_for_update().get(pk=found.product_id)
+        order = Order.objects.select_for_update().get(pk=found.pk)
+        payment = Payment.objects.select_for_update().filter(order=order).first()
+        if order.status == Order.Status.CANCELLED:
+            return JsonResponse({"success": True, "order": order_payload(order)})
+        if order.status != Order.Status.PENDING or (payment and payment.status == "SUCCESS"):
+            return error_response("Only unpaid pending orders can be cancelled.", status=409)
+        if payment and payment.attempts.filter(status__in=["PROCESSING", "UNKNOWN"]).exists():
+            return error_response("A payment is still pending. Check its result before cancelling.", status=409)
+        release(order, product)
+        order.status = Order.Status.CANCELLED
+        order.save(update_fields=["status", "updated_at"])
+    return JsonResponse({"success": True, "message": "Order cancelled; stock released.", "order": order_payload(order)})

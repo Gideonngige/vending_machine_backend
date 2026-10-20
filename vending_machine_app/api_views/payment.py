@@ -12,6 +12,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from vending_machine_app.models import PaymentAttempt, Payment, Order, Product, DispenseRequest
+from vending_machine_app.inventory import reserve, release, consume
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +209,7 @@ def lipa_na_mpesa(phone_number, amount, order_reference):
 @permission_classes([AllowAny])
 @transaction.atomic
 def initiate_coffee_payment(request, reference):
-    phone_number = normalize_mpesa_phone(request.data.get("phone_number"))
+    phone_number = normalize_mpesa_phone(request.data.get("phone_number")) if isinstance(request.data, dict) else None
 
     if not phone_number:
         return Response({
@@ -223,6 +224,9 @@ def initiate_coffee_payment(request, reference):
             "success": False,
             "message": "Order not found.",
         }, status=404)
+
+    product = Product.objects.select_for_update().get(pk=order.product_id)
+    order = Order.objects.select_for_update().get(pk=order.pk)
 
     if order.status != "PENDING":
         return Response({
@@ -250,6 +254,9 @@ def initiate_coffee_payment(request, reference):
     if payment.attempts.filter(status__in=["PROCESSING", "UNKNOWN"]).exists():
         return Response({"success": False, "message": "A payment attempt is still pending. Check this order before retrying."}, status=409)
 
+    if not reserve(order, product):
+        return Response({"success": False, "message": "Stock is no longer available for this order."}, status=409)
+
     stk_result = lipa_na_mpesa(
         phone_number=phone_number,
         amount=payment.amount,
@@ -264,6 +271,8 @@ def initiate_coffee_payment(request, reference):
         )
         payment.status = "PROCESSING" if stk_result.get("uncertain") else "FAILED"
         payment.save(update_fields=["status", "updated_at"])
+        if not stk_result.get("uncertain"):
+            release(order, product)
         return Response({
             "success": False, "message": stk_result.get("message", "Unable to initiate payment."),
         }, status=409 if stk_result.get("uncertain") else 400)
@@ -318,13 +327,13 @@ def mpesa_callback(request):
             attempt = PaymentAttempt.objects.filter(checkout_request_id=checkout_request_id).first()
             if not attempt:
                 return Response({"ResultCode": 1, "ResultDesc": "Payment attempt not found"}, status=404)
-            # Use the same payment lock as initiation to serialize attempt updates.
+            found = Payment.objects.select_related("order").get(pk=attempt.payment_id)
+            product = Product.objects.select_for_update().get(pk=found.order.product_id)
+            order = Order.objects.select_for_update().get(pk=found.order_id)
             payment = Payment.objects.select_for_update().get(pk=attempt.payment_id)
             attempt = PaymentAttempt.objects.select_for_update().get(pk=attempt.pk)
             if attempt.status == "SUCCESS":
                 return Response({"ResultCode": 0, "ResultDesc": "Already processed"})
-
-            order = payment.order
 
             if result_code == 0:
                 callback_metadata = stk.get("CallbackMetadata")
@@ -369,9 +378,6 @@ def mpesa_callback(request):
                 payment.paid_at = timezone.now()
                 payment.save()
 
-                order.status = "PAID"
-                order.save(update_fields=["status"])
-
                 dispense = (
                     DispenseRequest.objects
                     .select_for_update()
@@ -379,29 +385,16 @@ def mpesa_callback(request):
                     .first()
                 )
 
-                # Payment authorizes preparation; only machine feedback can
-                # establish that coffee is ready. Leave dispensing pending.
-
-                # Decrement stock only on the first successful callback.
-
-                product = Product.objects.select_for_update().get(
-                    pk=order.product_id
-                )
-
-                if product.stock_quantity >= order.quantity:
-                    product.stock_quantity -= order.quantity
-                    product.save(update_fields=["stock_quantity", "updated_at"])
-                else:
-                    # Payment succeeded, but there is insufficient stock.
-                    # Do not pretend the coffee has been dispensed.
-                    if dispense:
-                        dispense.status = "FAILED"
-                        dispense.error_message = (
-                            "Payment succeeded but stock is insufficient."
-                        )
-                        dispense.save(
-                            update_fields=["status", "error_message"]
-                        )
+                if dispense is None:
+                    dispense = DispenseRequest.objects.create(order=order, machine_slot=product.machine_slot)
+                fulfilled = consume(order, product)
+                order.status = "PAID" if fulfilled else "FAILED"
+                order.save(update_fields=["status", "updated_at"])
+                if not fulfilled and dispense:
+                    dispense.status = "FAILED"
+                    dispense.error_message = "Payment received but stock is unavailable or the order was cancelled. Operator review required."
+                    dispense.save(update_fields=["status", "error_message"])
+                # A paid order with stock remains pending preparation, never READY.
 
             else:
                 attempt.status = "FAILED"
@@ -414,6 +407,8 @@ def mpesa_callback(request):
                 payment.result_code = result_code
                 payment.result_description = stk.get("ResultDesc", "")
                 payment.save()
+
+                release(order, product)
 
                 # Keep the order pending so the customer can retry.
                 # Do not mark it paid or release a product.

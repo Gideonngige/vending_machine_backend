@@ -1,7 +1,7 @@
 from django.urls import path
 from . import views
 
-from .api_views.order import create_order, order_detail, collect_order
+from .api_views.order import create_order, order_detail, collect_order, cancel_order
 from .api_views.payment import initiate_coffee_payment, mpesa_callback
 from .api_views.product import product_list
 from .api_views.reports import sales_summary
@@ -27,6 +27,7 @@ urlpatterns = [
 
     path("orders/", create_order, name="create-order"),
     path("orders/<str:reference>/", order_detail, name="order-detail"),
+    path("orders/<str:reference>/cancel/", cancel_order, name="cancel-order"),
     path("orders/<str:reference>/collect/", collect_order, name="collect-order"),
 
     path("payments/<str:reference>/stk-push/", initiate_coffee_payment, name="coffee-stk-push"),

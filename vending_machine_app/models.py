@@ -94,6 +94,25 @@ class Order(models.Model):
         super().save(*args, **kwargs)
 
 
+class StockReservation(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        CONSUMED = "CONSUMED", "Consumed by payment"
+        RELEASED = "RELEASED", "Released"
+        EXPIRED = "EXPIRED", "Expired"
+
+    order = models.OneToOneField(Order, on_delete=models.PROTECT, related_name="stock_reservation")
+    quantity = models.PositiveIntegerField()
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.ACTIVE)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["status", "expires_at"], name="inventory_expiry_idx")]
+        constraints = [models.CheckConstraint(condition=models.Q(quantity__gt=0), name="reservation_quantity_positive")]
+
+
 class Payment(models.Model):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
