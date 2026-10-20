@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 from pathlib import Path
+from datetime import timedelta
 from dotenv import load_dotenv
 load_dotenv()
 import os
@@ -43,6 +44,7 @@ INSTALLED_APPS = [
     'vending_machine_app',
     'corsheaders', 
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
 ]
 
 MIDDLEWARE = [
@@ -56,9 +58,8 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-FRONTEND_WEB_URL = os.getenv('FRONTEND_WEB_URL', 'http://127.0.0.1:5173')
 CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_CREDENTIALS = False
 CORS_ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv(
     'FRONTEND_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173'
 ).split(',') if origin.strip()]
@@ -68,6 +69,19 @@ SESSION_COOKIE_SECURE = os.getenv('DJANGO_COOKIE_SECURE', 'false').lower() == 't
 CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
 SESSION_COOKIE_SAMESITE = os.getenv('DJANGO_COOKIE_SAMESITE', 'Lax')
 CSRF_COOKIE_SAMESITE = SESSION_COOKIE_SAMESITE
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+}
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=5),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'CHECK_REVOKE_TOKEN': True,
+    'SIGNING_KEY': os.getenv('JWT_SIGNING_KEY') or SECRET_KEY,
+}
 
 ROOT_URLCONF = 'vending_machine.urls'
 
@@ -91,14 +105,6 @@ WSGI_APPLICATION = 'vending_machine.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
-
 
 DATABASES = {
     'default': {
@@ -152,11 +158,3 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 
-# Email
-# https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
-
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
-}

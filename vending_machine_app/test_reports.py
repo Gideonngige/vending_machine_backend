@@ -4,6 +4,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework_simplejwt.tokens import AccessToken
 
 from .models import Machine, Product, Order, Payment, DispenseRequest
 
@@ -26,7 +27,7 @@ class SalesReportTests(TestCase):
     def test_access_requires_staff(self):
         self.assertIn(self.client.get(self.url).status_code, (401, 403))
         user = get_user_model().objects.create_user(username="customer")
-        self.client.force_login(user)
+        self.client.defaults["HTTP_AUTHORIZATION"] = f"Bearer {AccessToken.for_user(user)}"
         self.assertEqual(self.client.get(self.url).status_code, 403)
 
     def test_payment_and_dispensing_are_counted_separately(self):
@@ -36,6 +37,7 @@ class SalesReportTests(TestCase):
         Payment.objects.create(order=unpaid, amount=100, phone_number=unpaid.customer_phone, status="FAILED")
         DispenseRequest.objects.create(order=order, machine_slot=1, status="READY", completed_at=timezone.now())
         self.client.force_login(self.staff)
+        self.client.defaults["HTTP_AUTHORIZATION"] = f"Bearer {AccessToken.for_user(self.staff)}"
         data = self.client.get(self.url).json()
         self.assertEqual(data["today"], {"revenue": "300", "paid_orders": 2, "coffees_dispensed": 2})
         self.assertEqual(data["by_product"][0]["paid_orders"], 2)
@@ -46,6 +48,7 @@ class SalesReportTests(TestCase):
         product = Product.objects.create(machine=other, name="Tea", price=50, machine_slot=1)
         self.paid_order(product=product)
         self.client.force_login(self.staff)
+        self.client.defaults["HTTP_AUTHORIZATION"] = f"Bearer {AccessToken.for_user(self.staff)}"
         data = self.client.get(self.url, {"machine": "SECOND"}).json()
         self.assertEqual(data["all_time"]["revenue"], "50")
         self.assertEqual(len(data["by_machine"]), 1)
@@ -56,6 +59,7 @@ class SalesReportTests(TestCase):
         self.paid_order(paid_at=datetime(2026, 10, 19, 22, tzinfo=dt_timezone.utc))
         self.paid_order(paid_at=datetime(2026, 10, 19, 20, tzinfo=dt_timezone.utc))
         self.client.force_login(self.staff)
+        self.client.defaults["HTTP_AUTHORIZATION"] = f"Bearer {AccessToken.for_user(self.staff)}"
         with timezone.override("Africa/Nairobi"), patch(
             "vending_machine_app.api_views.reports.timezone.localdate",
             return_value=datetime(2026, 10, 20).date(),
@@ -75,6 +79,7 @@ class SalesReportTests(TestCase):
     def test_dashboard_matches_api_and_links_from_admin(self):
         self.paid_order(quantity=2)
         self.client.force_login(self.staff)
+        self.client.defaults["HTTP_AUTHORIZATION"] = f"Bearer {AccessToken.for_user(self.staff)}"
         response = self.client.get("/admin/sales-report/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["summary"], self.client.get(self.url).json())
@@ -86,6 +91,7 @@ class SalesReportTests(TestCase):
         Machine.objects.create(code="EMPTY", name="Empty machine")
         self.paid_order()
         self.client.force_login(self.staff)
+        self.client.defaults["HTTP_AUTHORIZATION"] = f"Bearer {AccessToken.for_user(self.staff)}"
         response = self.client.get("/admin/sales-report/?machine=EMPTY")
         self.assertContains(response, "No successful payments yet.")
         self.assertEqual(response.context["summary"]["all_time"]["paid_orders"], 0)

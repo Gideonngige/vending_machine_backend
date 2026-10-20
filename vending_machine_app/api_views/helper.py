@@ -1,4 +1,7 @@
-from .common_imports import *
+import json
+import re
+
+from django.http import JsonResponse
 
 
 def normalize_phone(value):

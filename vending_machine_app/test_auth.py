@@ -1,5 +1,8 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TestCase
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 
 class StaffAuthTests(TestCase):
@@ -11,18 +14,23 @@ class StaffAuthTests(TestCase):
     def setUp(self):
         self.browser = Client(enforce_csrf_checks=True)
 
-    def sign_in(self, username="owner"):
-        token = self.browser.get("/api/v1/auth/session/").json()["csrf_token"]
-        return self.browser.post("/api/v1/auth/login/", {
-            "username": username, "password": "test-password",
-        }, content_type="application/json", HTTP_X_CSRFTOKEN=token)
+    def post(self, path, data):
+        return self.browser.post(f"/api/v1/auth/{path}/", data, content_type="application/json")
 
-    def test_staff_can_login_restore_and_access_reports(self):
-        self.assertEqual(self.browser.get("/api/v1/auth/session/").json()["user"], None)
-        self.assertEqual(self.sign_in().status_code, 200)
-        self.assertEqual(self.browser.get("/api/v1/auth/session/").json()["user"]["username"], "owner")
-        self.assertEqual(self.browser.get("/api/v1/reports/sales/").status_code, 200)
-        self.assertEqual(self.browser.get("/admin/").status_code, 200)
+    def sign_in(self, username="owner"):
+        return self.post("login", {"username": username, "password": "test-password"})
+
+    def test_login_returns_tokens_without_setting_cookies(self):
+        response = self.sign_in()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.cookies)
+        data = response.json()
+        self.assertEqual(data["user"]["username"], "owner")
+        self.assertEqual(AccessToken(data["access"])["token_type"], "access")
+        self.assertEqual(RefreshToken(data["refresh"])["token_type"], "refresh")
+        self.assertIn("no-store", response.headers["Cache-Control"])
+        self.assertEqual(self.browser.get("/api/v1/auth/me/", HTTP_AUTHORIZATION=f'Bearer {data["access"]}').status_code, 200)
+        self.assertEqual(self.browser.get("/api/v1/reports/sales/", HTTP_AUTHORIZATION=f'Bearer {data["access"]}').status_code, 200)
 
     def test_customer_and_inactive_staff_cannot_login(self):
         self.assertEqual(self.sign_in("customer").status_code, 401)
@@ -30,33 +38,65 @@ class StaffAuthTests(TestCase):
         self.owner.save()
         self.assertEqual(self.sign_in().status_code, 401)
 
-    def test_login_and_logout_require_csrf(self):
-        self.assertEqual(self.browser.post("/api/v1/auth/login/", {}).status_code, 403)
-        self.sign_in()
-        self.assertEqual(self.browser.post("/api/v1/auth/logout/").status_code, 403)
+    def test_invalid_credentials_and_malformed_body(self):
+        self.assertEqual(self.post("login", {"username": "owner", "password": "wrong"}).status_code, 401)
+        self.assertEqual(self.post("login", []).status_code, 400)
+        self.assertEqual(self.post("login", {"username": "owner"}).status_code, 400)
 
-    def test_logout_invalidates_session(self):
-        token = self.sign_in().json()["csrf_token"]
-        self.assertEqual(self.browser.post("/api/v1/auth/logout/", HTTP_X_CSRFTOKEN=token).status_code, 200)
-        self.assertEqual(self.browser.get("/api/v1/auth/session/").json()["user"], None)
-        self.assertIn(self.browser.get("/api/v1/reports/sales/").status_code, (401, 403))
+    def test_refresh_rotates_and_old_token_cannot_be_replayed(self):
+        original = self.sign_in().json()
+        response = self.post("refresh", {"refresh": original["refresh"]})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.cookies)
+        self.assertNotEqual(response.json()["refresh"], original["refresh"])
+        self.assertEqual(self.post("refresh", {"refresh": original["refresh"]}).status_code, 401)
+        self.assertEqual(self.post("refresh", {"refresh": response.json()["refresh"]}).status_code, 200)
 
-    def test_superuser_uses_the_same_login(self):
+    def test_logout_revokes_refresh_and_does_not_set_cookies(self):
+        data = self.sign_in().json()
+        response = self.post("logout", {"refresh": data["refresh"]})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.cookies)
+        self.assertEqual(self.post("refresh", {"refresh": data["refresh"]}).status_code, 401)
+        self.assertEqual(self.post("logout", {"refresh": data["refresh"]}).status_code, 200)
+        # Access JWTs expire independently after five minutes.
+        self.assertEqual(self.browser.get("/api/v1/auth/me/", HTTP_AUTHORIZATION=f'Bearer {data["access"]}').status_code, 200)
+
+    def test_expired_or_tampered_access_is_rejected(self):
+        expired = AccessToken.for_user(self.owner)
+        expired.set_exp(lifetime=timedelta(seconds=-1))
+        for value in (str(expired), "invalid-token"):
+            self.assertEqual(self.browser.get("/api/v1/auth/me/", HTTP_AUTHORIZATION=f"Bearer {value}").status_code, 401)
+
+    def test_refresh_rejects_access_token_and_missing_token(self):
+        data = self.sign_in().json()
+        self.assertEqual(self.post("refresh", {"refresh": data["access"]}).status_code, 401)
+        self.assertEqual(self.post("refresh", {}).status_code, 400)
+        self.assertEqual(self.post("logout", {}).status_code, 400)
+
+    def test_demoted_staff_cannot_refresh_or_read_reports(self):
+        data = self.sign_in().json()
+        self.owner.is_staff = False
+        self.owner.save()
+        self.assertEqual(self.post("refresh", {"refresh": data["refresh"]}).status_code, 403)
+        self.assertEqual(self.browser.get("/api/v1/reports/sales/", HTTP_AUTHORIZATION=f'Bearer {data["access"]}').status_code, 403)
+
+    def test_password_change_invalidates_access_and_refresh(self):
+        data = self.sign_in().json()
+        self.owner.set_password("changed-password")
+        self.owner.save()
+        self.assertEqual(self.post("refresh", {"refresh": data["refresh"]}).status_code, 401)
+        self.assertEqual(self.browser.get("/api/v1/auth/me/", HTTP_AUTHORIZATION=f'Bearer {data["access"]}').status_code, 401)
+
+    def test_session_cookie_alone_cannot_access_api(self):
+        self.browser.force_login(self.owner)
+        self.assertEqual(self.browser.get("/api/v1/reports/sales/").status_code, 401)
+        self.assertEqual(self.browser.get("/api/v1/auth/me/").status_code, 401)
+
+    def test_superuser_uses_same_jwt_login_without_admin_session(self):
         self.owner.is_superuser = True
         self.owner.save()
-        data = self.sign_in().json()
-        self.assertTrue(data["user"]["is_superuser"])
-        self.assertTrue(self.browser.cookies["sessionid"]["httponly"])
-
-    def test_untrusted_origin_cannot_login_even_with_token(self):
-        token = self.browser.get("/api/v1/auth/session/").json()["csrf_token"]
-        response = self.browser.post("/api/v1/auth/login/", {
-            "username": "owner", "password": "test-password",
-        }, content_type="application/json", HTTP_X_CSRFTOKEN=token,
-            HTTP_ORIGIN="https://untrusted.example")
-        self.assertEqual(response.status_code, 403)
-
-    @override_settings(FRONTEND_WEB_URL="https://coffee.example")
-    def test_admin_login_redirects_to_react_without_external_next_redirect(self):
-        response = self.browser.get("/admin/login/?next=https://untrusted.example")
-        self.assertRedirects(response, "https://coffee.example/#/owner/login", fetch_redirect_response=False)
+        response = self.sign_in()
+        self.assertTrue(response.json()["user"]["is_superuser"])
+        self.assertFalse(response.cookies)
+        self.assertEqual(self.browser.get("/admin/").status_code, 302)

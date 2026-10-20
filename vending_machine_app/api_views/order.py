@@ -1,9 +1,14 @@
-from .common_imports import *
-from .helper import *
-from vending_machine_app.models import Machine
+from django.conf import settings
+from django.db import transaction
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from rest_framework.decorators import api_view
+
+from vending_machine_app.models import Machine, Product, Order, Payment, DispenseRequest
+from .helper import json_body, normalize_phone, error_response, order_payload
 
 
-@csrf_exempt
 @api_view(["POST"])
 def create_order(request):
     body = json_body(request)
@@ -72,9 +77,6 @@ def create_order(request):
             "success": True,
             "message": "Order created. Payment has not yet been confirmed.",
             "order": order_payload(order),
-            "payment_mode": getattr(
-                settings, "COFFEE_PAYMENT_MODE", "simulation"
-            ),
         },
         status=201,
     )
@@ -98,7 +100,6 @@ def order_detail(request, reference):
 
 
 
-@csrf_exempt
 @api_view(["POST"])
 def collect_order(request, reference):
     body = json_body(request)

@@ -1,14 +1,15 @@
 from django.urls import path
 from . import views
 
-from .api_views.order import *
-from .api_views.payment import *
-from .api_views.product import *
+from .api_views.order import create_order, order_detail, collect_order
+from .api_views.payment import initiate_coffee_payment, mpesa_callback
+from .api_views.product import product_list
 from .api_views.reports import sales_summary
 from . import auth_views
 
 urlpatterns = [
-    path("auth/session/", auth_views.session_status),
+    path("auth/me/", auth_views.current_staff),
+    path("auth/refresh/", auth_views.staff_refresh),
     path("auth/login/", auth_views.staff_login),
     path("auth/logout/", auth_views.staff_logout),
     path("reports/sales/", sales_summary, name="sales-summary"),

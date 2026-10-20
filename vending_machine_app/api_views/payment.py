@@ -1,8 +1,17 @@
-from vending_machine_app.models import PaymentAttempt
+import base64
+import logging
+import os
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
-from decimal import InvalidOperation
+import requests
+from django.db import transaction
+from django.utils import timezone
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
 
-from .common_imports import *
+from vending_machine_app.models import PaymentAttempt, Payment, Order, Product, DispenseRequest
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +294,6 @@ def initiate_coffee_payment(request, reference):
 
 
 
-@csrf_exempt
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def mpesa_callback(request):
@@ -416,8 +424,7 @@ def mpesa_callback(request):
         })
 
     except Exception:
-        import logging
-        logging.getLogger(__name__).exception(
+        logger.exception(
             "M-Pesa callback processing failed."
         )
         return Response({

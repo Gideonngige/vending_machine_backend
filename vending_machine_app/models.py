@@ -2,7 +2,6 @@
 import uuid
 
 from django.db import models
-from django.utils import timezone
 
 
 def generate_order_reference():

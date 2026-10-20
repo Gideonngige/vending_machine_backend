@@ -1,5 +1,8 @@
-from .common_imports import *
-from vending_machine_app.models import Machine
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view
+
+from vending_machine_app.models import Machine, Product
 
 
 @api_view(["GET"])
