@@ -7,8 +7,11 @@ from .api_views.product import product_list
 from .api_views.reports import sales_summary
 from . import auth_views
 from .api_views import management
+from .api_views.transactions import transaction_list, transaction_detail
 
 urlpatterns = [
+    path("management/transactions/", transaction_list),
+    path("management/transactions/<str:reference>/", transaction_detail),
     path("management/machines/", management.machines),
     path("management/machines/<int:pk>/", management.update_machine),
     path("management/products/", management.products),
