@@ -12,6 +12,8 @@ from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 
 from vending_machine_app.models import Machine, Order, Payment
+from vending_machine_app.reconciliation import reconcile_attempt
+from vending_machine_app.models import PaymentAttempt
 
 
 class Filters(serializers.Serializer):
@@ -21,7 +23,7 @@ class Filters(serializers.Serializer):
     order_status = serializers.ChoiceField(choices=Order.Status.values, required=False)
     start_date = serializers.DateField(required=False)
     end_date = serializers.DateField(required=False)
-    attention = serializers.ChoiceField(choices=["paid_not_dispensed", "extra_payments", "uncertain", "dispense_failed"], required=False)
+    attention = serializers.ChoiceField(choices=["paid_not_dispensed", "extra_payments", "uncertain", "dispense_failed", "unverified"], required=False)
     page = serializers.IntegerField(min_value=1, required=False)
     page_size = serializers.IntegerField(min_value=1, max_value=100, required=False)
 
@@ -52,6 +54,8 @@ def transaction_data(order, detail=False):
         flags.append("uncertain")
     if dispense and dispense.status == "FAILED":
         flags.append("dispense_failed")
+    if payment and payment.status == "SUCCESS" and not payment.verified_at:
+        flags.append("unverified")
     data = {
         "reference": order.reference, "machine_code": order.machine.code,
         "machine_name": order.machine.name, "product_name": order.product_name,
@@ -62,6 +66,7 @@ def transaction_data(order, detail=False):
             "id": payment.pk, "status": payment.status, "amount": str(payment.amount),
             "receipt": payment.mpesa_receipt_number, "paid_at": payment.paid_at,
             "result_description": payment.result_description,
+            "verified_at": payment.verified_at, "receipt_verified": False,
         },
         "dispense": None if not dispense else {
             "status": dispense.status, "machine_slot": dispense.machine_slot,
@@ -76,6 +81,13 @@ def transaction_data(order, detail=False):
             "merchant_request_id": attempt.merchant_request_id, "receipt": attempt.mpesa_receipt_number,
             "result_code": attempt.result_code, "result_description": attempt.result_description,
             "created_at": attempt.created_at, "paid_at": attempt.paid_at,
+            "verification_status": attempt.verification_status,
+            "verification_message": attempt.verification_message,
+            "verified_at": attempt.verified_at, "last_checked_at": attempt.last_checked_at,
+            "callback_received_at": attempt.callback_received_at,
+            "provider_result_code": attempt.provider_result_code,
+            "reported_receipt": attempt.callback_receipt_number,
+            "receipt_verified": False,
         } for attempt in payment.attempts.all()]
     return data
 
@@ -121,6 +133,8 @@ def transaction_list(request):
         orders = orders.filter(uncertain_attempts__gt=0)
     elif attention == "dispense_failed":
         orders = orders.filter(dispense_request__status="FAILED")
+    elif attention == "unverified":
+        orders = orders.filter(payment__status="SUCCESS", payment__verified_at__isnull=True)
     pages = Pages()
     page = pages.paginate_queryset(orders, request)
     response = pages.get_paginated_response([transaction_data(order) for order in page])
@@ -134,3 +148,11 @@ def transaction_list(request):
 def transaction_detail(request, reference):
     order = get_object_or_404(records().prefetch_related("payment__attempts"), reference=reference)
     return Response(transaction_data(order, detail=True))
+
+
+@never_cache
+@api_view(["POST"])
+@permission_classes([IsAdminUser])
+def reconcile_payment_attempt(request, pk):
+    get_object_or_404(PaymentAttempt, pk=pk)
+    return Response(reconcile_attempt(pk))

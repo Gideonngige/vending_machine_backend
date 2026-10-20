@@ -82,6 +82,7 @@ class PaymentAdmin(admin.ModelAdmin):
         "result_code",
         "result_description",
         "paid_at",
+        "verified_at",
     )
 
 

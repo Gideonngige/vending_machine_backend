@@ -29,6 +29,7 @@
   <button type="submit" class="button">Update report</button>
   <span>As of {{ summary.as_of }} · {{ summary.timezone }}</span>
 </form>
+{% if summary.unverified_paid_orders %}<p class="sales-note">{{ summary.unverified_paid_orders }} recorded paid orders require independent verification. Revenue totals include these records.</p>{% endif %}
 <div class="sales-cards">
   {% for label, period in periods %}
   <section class="sales-card">

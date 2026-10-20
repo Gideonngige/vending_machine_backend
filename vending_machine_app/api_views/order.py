@@ -6,6 +6,7 @@ from django.utils import timezone
 from rest_framework.decorators import api_view
 
 from vending_machine_app.models import Machine, Product, Order, Payment, DispenseRequest
+from vending_machine_app.reconciliation import unsettled_attempts
 from vending_machine_app.inventory import available_quantity, reserve, release
 from .helper import json_body, normalize_phone, error_response, order_payload
 
@@ -127,6 +128,10 @@ def collect_order(request, reference):
             order=order
         )
 
+        payment = getattr(order, "payment", None)
+        if not payment or payment.status != "SUCCESS" or not payment.verified_at:
+            return error_response("Payment must be independently verified before collection.", status=409)
+
         if order.status != Order.Status.READY:
             return error_response(
                 "This order is not ready for collection.",
@@ -158,7 +163,7 @@ def cancel_order(request, reference):
             return JsonResponse({"success": True, "order": order_payload(order)})
         if order.status != Order.Status.PENDING or (payment and payment.status == "SUCCESS"):
             return error_response("Only unpaid pending orders can be cancelled.", status=409)
-        if payment and payment.attempts.filter(status__in=["PROCESSING", "UNKNOWN"]).exists():
+        if payment and payment.attempts.filter(unsettled_attempts()).exists():
             return error_response("A payment is still pending. Check its result before cancelling.", status=409)
         release(order, product)
         order.status = Order.Status.CANCELLED

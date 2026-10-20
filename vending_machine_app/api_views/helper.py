@@ -3,6 +3,7 @@ import re
 
 from django.http import JsonResponse
 from django.utils import timezone
+from vending_machine_app.reconciliation import unsettled_attempts
 
 
 def normalize_phone(value):
@@ -53,6 +54,9 @@ def order_payload(order):
         },
         "payment": {
             "status": payment.status if payment else None,
+            "verified": bool(payment and payment.verified_at),
+            "verified_at": payment.verified_at if payment else None,
+            "verification_pending": bool(payment and payment.attempts.filter(unsettled_attempts()).exists()),
             "method": payment.method if payment else None,
             "receipt_number": (
                 payment.mpesa_receipt_number if payment else None

@@ -8,6 +8,7 @@ from django.core.management import call_command
 from io import StringIO
 from django.db.migrations.executor import MigrationExecutor
 
+from .reconciliation import reconcile_attempt
 from .models import DispenseRequest, Order, Payment, PaymentAttempt, Product, Machine
 
 
@@ -41,11 +42,15 @@ class PaymentCallbackTests(TestCase):
             ]},
         }}}
 
-    def callback(self):
-        return self.client.post(
-            "/api/v1/payments/callback/", self.payload,
-            content_type="application/json",
-        )
+    def callback(self, reconcile=True):
+        response = self.client.post("/api/v1/payments/callback/", self.payload, content_type="application/json")
+        if reconcile and response.status_code == 200:
+            stk = self.payload["Body"]["stkCallback"]
+            attempt = PaymentAttempt.objects.get(checkout_request_id=stk["CheckoutRequestID"])
+            result = {"state": "SUCCESS" if stk["ResultCode"] == 0 else "FAILED", "code": str(stk["ResultCode"]), "message": "Provider test result"}
+            with patch("vending_machine_app.reconciliation.query_stk", return_value=result):
+                reconcile_attempt(attempt.pk)
+        return response
 
     def test_success_records_receipt_without_claiming_dispense_completion(self):
         self.assertEqual(self.callback().status_code, 200)
@@ -76,11 +81,12 @@ class PaymentCallbackTests(TestCase):
         self.assertEqual(self.order.status, Order.Status.PENDING)
         self.assertEqual(self.product.stock_quantity, 10)
 
-    def test_database_failure_returns_error_and_rolls_back(self):
-        with patch.object(Product, "save", side_effect=RuntimeError("test error")):
-            with self.assertLogs("vending_machine_app.api_views.payment", level="ERROR"):
-                response = self.callback()
-        self.assertEqual(response.status_code, 500)
+    def test_database_failure_during_verification_rolls_back(self):
+        self.assertEqual(self.callback(reconcile=False).status_code, 200)
+        with patch("vending_machine_app.reconciliation.query_stk", return_value={"state": "SUCCESS", "code": "0", "message": "Provider success"}):
+            with patch.object(Product, "save", side_effect=RuntimeError("test error")):
+                with self.assertRaises(RuntimeError):
+                    reconcile_attempt(self.attempt.pk)
         self.payment.refresh_from_db()
         self.order.refresh_from_db()
         self.assertEqual(self.payment.status, Payment.Status.PROCESSING)

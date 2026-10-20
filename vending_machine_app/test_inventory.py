@@ -12,6 +12,7 @@ from django.utils import timezone
 from rest_framework_simplejwt.tokens import AccessToken
 
 from .inventory import available_quantity
+from .reconciliation import reconcile_attempt
 from .models import Machine, Product, Order, Payment, PaymentAttempt, StockReservation
 
 
@@ -30,10 +31,16 @@ class ReservationTests(TestCase):
         payment = order.payment
         attempt = PaymentAttempt.objects.create(payment=payment, phone_number=order.customer_phone,
                                                amount=payment.amount, checkout_request_id=f"checkout-{order.pk}")
-        return self.client.post("/api/v1/payments/callback/", {"Body": {"stkCallback": {
+        response = self.client.post("/api/v1/payments/callback/", {"Body": {"stkCallback": {
             "CheckoutRequestID": attempt.checkout_request_id, "ResultCode": code, "ResultDesc": "Test result",
             "CallbackMetadata": {"Item": [{"Name": "Amount", "Value": int(payment.amount)}, {"Name": "MpesaReceiptNumber", "Value": f"R-{order.pk}"}]},
         }}}, content_type="application/json")
+        if response.status_code == 200:
+            with patch("vending_machine_app.reconciliation.query_stk", return_value={
+                "state": "SUCCESS" if code == 0 else "FAILED", "code": str(code), "message": "Provider test result",
+            }):
+                reconcile_attempt(attempt.pk)
+        return response
 
     def new_order(self):
         response = self.create()
@@ -102,7 +109,7 @@ class ReservationTests(TestCase):
         order = self.new_order()
         self.assertEqual(self.callback(order).status_code, 200)
         attempt = order.payment.attempts.get()
-        payload = {"Body": {"stkCallback": {"CheckoutRequestID": attempt.checkout_request_id, "ResultCode": 0}}}
+        payload = {"Body": {"stkCallback": {"CheckoutRequestID": attempt.checkout_request_id, "ResultCode": 0, "CallbackMetadata": {"Item": [{"Name": "Amount", "Value": 100}, {"Name": "MpesaReceiptNumber", "Value": f"R-{order.pk}"}]}}}}
         self.assertEqual(self.client.post("/api/v1/payments/callback/", payload, content_type="application/json").status_code, 200)
         self.product.refresh_from_db()
         order.refresh_from_db()

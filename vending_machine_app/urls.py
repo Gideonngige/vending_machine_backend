@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from .health import health, ready
 
 from .api_views.order import create_order, order_detail, collect_order, cancel_order
 from .api_views.payment import initiate_coffee_payment, mpesa_callback
@@ -7,9 +8,12 @@ from .api_views.product import product_list
 from .api_views.reports import sales_summary
 from . import auth_views
 from .api_views import management
-from .api_views.transactions import transaction_list, transaction_detail
+from .api_views.transactions import transaction_list, transaction_detail, reconcile_payment_attempt
 
 urlpatterns = [
+    path("management/payment-attempts/<int:pk>/reconcile/", reconcile_payment_attempt),
+    path("health/", health, name="health"),
+    path("ready/", ready, name="ready"),
     path("management/transactions/", transaction_list),
     path("management/transactions/<str:reference>/", transaction_detail),
     path("management/machines/", management.machines),

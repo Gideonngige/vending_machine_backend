@@ -145,6 +145,7 @@ class Payment(models.Model):
     result_code = models.CharField(max_length=20, blank=True)
     result_description = models.TextField(blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
+    verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -173,6 +174,24 @@ class PaymentAttempt(models.Model):
     result_description = models.TextField(blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    request_confirmed = models.BooleanField(default=False)
+    provider_environment = models.CharField(max_length=12, blank=True)
+    business_shortcode = models.CharField(max_length=20, blank=True)
+    verification_status = models.CharField(max_length=20, default="UNVERIFIED", choices=[
+        (value, value.replace("_", " ").title()) for value in
+        ("UNVERIFIED", "PENDING", "VERIFIED", "FAILED", "ERROR", "MANUAL_REVIEW")
+    ])
+    verified_at = models.DateTimeField(null=True, blank=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    next_check_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    verification_message = models.TextField(blank=True)
+    provider_result_code = models.CharField(max_length=20, blank=True)
+    check_token = models.UUIDField(null=True, blank=True)
+    check_started_at = models.DateTimeField(null=True, blank=True)
+    callback_received_at = models.DateTimeField(null=True, blank=True)
+    callback_result_code = models.CharField(max_length=20, blank=True)
+    callback_receipt_number = models.CharField(max_length=50, blank=True)
+    callback_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     class Meta:
         ordering = ["-id"]

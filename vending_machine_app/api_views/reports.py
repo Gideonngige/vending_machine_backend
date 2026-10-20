@@ -55,6 +55,7 @@ def build_sales_summary(machine_code=None):
     return {
         "currency": "KES", "timezone": str(zone), "as_of": today.isoformat(),
         "machine": machine_code,
+        "unverified_paid_orders": payments.filter(verified_at__isnull=True).count(),
         "today": period(today),
         "week": period(today - timedelta(days=today.weekday())),
         "month": period(today.replace(day=1)),

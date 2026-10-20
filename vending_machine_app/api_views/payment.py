@@ -1,7 +1,5 @@
-import base64
 import logging
 import os
-from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 import requests
@@ -12,53 +10,11 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from vending_machine_app.models import PaymentAttempt, Payment, Order, Product, DispenseRequest
-from vending_machine_app.inventory import reserve, release, consume
+from vending_machine_app.inventory import reserve, release
+from vending_machine_app.reconciliation import unsettled_attempts
+from vending_machine_app.daraja import get_daraja_urls, get_access_token, stk_credentials, environment
 
 logger = logging.getLogger(__name__)
-
-
-def get_daraja_urls():
-    """Return URLs for the configured Daraja environment."""
-    if os.environ.get("MPESA_ENVIRONMENT", "").lower() == "production":
-        base_url = "https://api.safaricom.co.ke"
-    else:
-        base_url = "https://sandbox.safaricom.co.ke"
-
-    return {
-        "access_token_url": (
-            f"{base_url}/oauth/v1/generate"
-            "?grant_type=client_credentials"
-        ),
-        "stk_push_url": (
-            f"{base_url}/mpesa/stkpush/v1/processrequest"
-        ),
-    }
-
-
-def get_access_token():
-    """Get an OAuth access token from Daraja."""
-    urls = get_daraja_urls()
-
-    try:
-        response = requests.get(
-            urls["access_token_url"],
-            auth=(
-                os.getenv("MPESA_CONSUMER_KEY"),
-                os.getenv("MPESA_CONSUMER_SECRET"),
-            ),
-            timeout=30,
-        )
-        response.raise_for_status()
-
-        token = response.json().get("access_token")
-        if not token:
-            logger.error("Daraja response did not contain an access token.")
-
-        return token
-
-    except (requests.RequestException, ValueError):
-        logger.exception("Daraja access token request failed.")
-        return None
 
 
 def normalize_mpesa_phone(phone_number):
@@ -122,12 +78,8 @@ def lipa_na_mpesa(phone_number, amount, order_reference):
             "message": "Failed to get M-Pesa access token.",
         }
 
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     shortcode = str(os.getenv("MPESA_SHORTCODE"))
-
-    password = base64.b64encode(
-        f"{shortcode}{os.getenv('MPESA_PASSKEY')}{timestamp}".encode()
-    ).decode()
+    timestamp, password = stk_credentials(shortcode)
 
     payload = {
         "BusinessShortCode": shortcode,
@@ -177,12 +129,12 @@ def lipa_na_mpesa(phone_number, amount, order_reference):
                 ),
             }
 
-        if data.get("ResponseCode") != "0" or not data.get(
+        if str(data.get("ResponseCode")) != "0" or not data.get(
             "CheckoutRequestID"
         ):
             return {
                 "success": False,
-                "uncertain": data.get("ResponseCode") in (None, "0"),
+                "uncertain": data.get("ResponseCode") is None or str(data.get("ResponseCode")) == "0",
                 "message": (
                     data.get("ResponseDescription")
                     or "M-Pesa did not accept the payment request."
@@ -251,7 +203,7 @@ def initiate_coffee_payment(request, reference):
     if not order.machine.is_enabled:
         return Response({"success": False, "message": "This machine is disabled."}, status=400)
 
-    if payment.attempts.filter(status__in=["PROCESSING", "UNKNOWN"]).exists():
+    if payment.attempts.filter(unsettled_attempts()).exists():
         return Response({"success": False, "message": "A payment attempt is still pending. Check this order before retrying."}, status=409)
 
     if not reserve(order, product):
@@ -280,6 +232,8 @@ def initiate_coffee_payment(request, reference):
     mpesa_data = stk_result["mpesa"]
     attempt = PaymentAttempt.objects.create(
         payment=payment, phone_number=phone_number, amount=payment.amount,
+        request_confirmed=True, provider_environment=environment(),
+        business_shortcode=os.getenv("MPESA_SHORTCODE", ""),
         checkout_request_id=mpesa_data["CheckoutRequestID"],
         merchant_request_id=mpesa_data.get("MerchantRequestID") or "",
     )
@@ -306,127 +260,55 @@ def initiate_coffee_payment(request, reference):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def mpesa_callback(request):
-    try:
-        # Reject malformed input before touching payment or stock records.
-        data = request.data
-        body = data.get("Body") if isinstance(data, dict) else None
-        stk = body.get("stkCallback") if isinstance(body, dict) else None
-        if not isinstance(stk, dict):
-            return Response({"ResultCode": 1, "ResultDesc": "Invalid callback body"}, status=400)
-
-        checkout_request_id = stk.get("CheckoutRequestID")
-        result_code = stk.get("ResultCode")
-        if (
-            not isinstance(checkout_request_id, str) or not checkout_request_id.strip()
-            or type(result_code) is not int or result_code < 0
-            or not isinstance(stk.get("ResultDesc", ""), str)
-        ):
-            return Response({"ResultCode": 1, "ResultDesc": "Invalid callback fields"}, status=400)
-
-        with transaction.atomic():
-            attempt = PaymentAttempt.objects.filter(checkout_request_id=checkout_request_id).first()
-            if not attempt:
-                return Response({"ResultCode": 1, "ResultDesc": "Payment attempt not found"}, status=404)
-            found = Payment.objects.select_related("order").get(pk=attempt.payment_id)
-            product = Product.objects.select_for_update().get(pk=found.order.product_id)
-            order = Order.objects.select_for_update().get(pk=found.order_id)
-            payment = Payment.objects.select_for_update().get(pk=attempt.payment_id)
-            attempt = PaymentAttempt.objects.select_for_update().get(pk=attempt.pk)
-            if attempt.status == "SUCCESS":
-                return Response({"ResultCode": 0, "ResultDesc": "Already processed"})
-
-            if result_code == 0:
-                callback_metadata = stk.get("CallbackMetadata")
-                items = callback_metadata.get("Item") if isinstance(callback_metadata, dict) else None
-                if not isinstance(items, list) or any(
-                    not isinstance(item, dict) or not isinstance(item.get("Name"), str)
-                    for item in items
-                ):
-                    return Response({"ResultCode": 1, "ResultDesc": "Invalid payment metadata"}, status=400)
-                metadata = {item["Name"]: item.get("Value") for item in items}
-                if len(metadata) != len(items):
-                    return Response({"ResultCode": 1, "ResultDesc": "Duplicate metadata fields"}, status=400)
-                try:
-                    amount = Decimal(str(metadata.get("Amount")))
-                except (InvalidOperation, ValueError):
-                    amount = Decimal("NaN")
-                receipt = metadata.get("MpesaReceiptNumber")
-                if (
-                    not amount.is_finite() or amount <= 0 or amount != attempt.amount
-                    or not isinstance(receipt, str) or not receipt.strip()
-                    or len(receipt) > 50
-                ):
-                    return Response({"ResultCode": 1, "ResultDesc": "Payment amount or receipt invalid"}, status=400)
-
-                attempt.status = "SUCCESS"
-                attempt.mpesa_receipt_number = receipt.strip()
-                attempt.result_code = result_code
-                attempt.result_description = stk.get("ResultDesc", "")
-                attempt.paid_at = timezone.now()
-                attempt.save()
-                # Record a second paid attempt without charging stock twice.
-                if payment.status == "SUCCESS":
-                    return Response({"ResultCode": 0, "ResultDesc": "Additional payment recorded; operator review required"})
-
-                payment.checkout_request_id = attempt.checkout_request_id
-                payment.merchant_request_id = attempt.merchant_request_id
-                payment.phone_number = attempt.phone_number
-                payment.status = "SUCCESS"
-                payment.mpesa_receipt_number = receipt.strip()
-                payment.result_code = result_code
-                payment.result_description = stk.get("ResultDesc", "")
-                payment.paid_at = timezone.now()
-                payment.save()
-
-                dispense = (
-                    DispenseRequest.objects
-                    .select_for_update()
-                    .filter(order=order)
-                    .first()
-                )
-
-                if dispense is None:
-                    dispense = DispenseRequest.objects.create(order=order, machine_slot=product.machine_slot)
-                fulfilled = consume(order, product)
-                order.status = "PAID" if fulfilled else "FAILED"
-                order.save(update_fields=["status", "updated_at"])
-                if not fulfilled and dispense:
-                    dispense.status = "FAILED"
-                    dispense.error_message = "Payment received but stock is unavailable or the order was cancelled. Operator review required."
-                    dispense.save(update_fields=["status", "error_message"])
-                # A paid order with stock remains pending preparation, never READY.
-
-            else:
-                attempt.status = "FAILED"
-                attempt.result_code = result_code
-                attempt.result_description = stk.get("ResultDesc", "")
-                attempt.save()
-                if payment.status == "SUCCESS" or payment.attempts.filter(status__in=["PROCESSING", "UNKNOWN"]).exists():
-                    return Response({"ResultCode": 0, "ResultDesc": "Attempt result recorded"})
-                payment.status = "FAILED"
-                payment.result_code = result_code
-                payment.result_description = stk.get("ResultDesc", "")
-                payment.save()
-
-                release(order, product)
-
-                # Keep the order pending so the customer can retry.
-                # Do not mark it paid or release a product.
-
-        return Response({
-            "ResultCode": 0,
-            "ResultDesc": "Accepted",
-        })
-
-    except Exception:
-        logger.exception(
-            "M-Pesa callback processing failed."
-        )
-        return Response({
-            "ResultCode": 1,
-            "ResultDesc": "Server error",
-        }, status=500)
-
-
-
-
+    # A callback is a hint, not trusted proof of success or failure.
+    data = request.data
+    body = data.get("Body") if isinstance(data, dict) else None
+    stk = body.get("stkCallback") if isinstance(body, dict) else None
+    if not isinstance(stk, dict):
+        return Response({"ResultCode": 1, "ResultDesc": "Invalid callback body"}, status=400)
+    checkout = stk.get("CheckoutRequestID")
+    code = stk.get("ResultCode")
+    if (not isinstance(checkout, str) or not checkout.strip() or type(code) is not int or code < 0
+            or not isinstance(stk.get("ResultDesc", ""), str)):
+        return Response({"ResultCode": 1, "ResultDesc": "Invalid callback fields"}, status=400)
+    receipt, amount = "", None
+    if code == 0:
+        container = stk.get("CallbackMetadata")
+        items = container.get("Item") if isinstance(container, dict) else None
+        if not isinstance(items, list) or any(not isinstance(item, dict) or not isinstance(item.get("Name"), str) for item in items):
+            return Response({"ResultCode": 1, "ResultDesc": "Invalid payment metadata"}, status=400)
+        metadata = {item["Name"]: item.get("Value") for item in items}
+        if len(items) != len(metadata):
+            return Response({"ResultCode": 1, "ResultDesc": "Duplicate metadata fields"}, status=400)
+        try:
+            amount = Decimal(str(metadata.get("Amount")))
+        except (InvalidOperation, ValueError):
+            amount = Decimal("NaN")
+        receipt = metadata.get("MpesaReceiptNumber")
+        if not amount.is_finite() or not isinstance(receipt, str) or not receipt.strip() or len(receipt) > 50:
+            return Response({"ResultCode": 1, "ResultDesc": "Payment amount or receipt invalid"}, status=400)
+    with transaction.atomic():
+        attempt = PaymentAttempt.objects.select_for_update().filter(checkout_request_id=checkout).first()
+        if not attempt:
+            return Response({"ResultCode": 1, "ResultDesc": "Payment attempt not found"}, status=404)
+        if code == 0 and (amount <= 0 or amount != attempt.amount):
+            return Response({"ResultCode": 1, "ResultDesc": "Payment amount or receipt invalid"}, status=400)
+        if attempt.callback_received_at and (attempt.callback_receipt_number or code != 0):
+            return Response({"ResultCode": 0, "ResultDesc": "Already recorded; verification queued or completed"})
+        if attempt.merchant_request_id and stk.get("MerchantRequestID", attempt.merchant_request_id) != attempt.merchant_request_id:
+            return Response({"ResultCode": 1, "ResultDesc": "Merchant request mismatch"}, status=400)
+        attempt.callback_received_at = timezone.now()
+        attempt.callback_result_code = str(code)
+        attempt.callback_amount = amount
+        attempt.callback_receipt_number = receipt.strip()
+        if not attempt.verified_at:
+            attempt.verification_status = "PENDING"
+        if attempt.next_check_at is None:
+            attempt.next_check_at = timezone.now()
+        attempt.save()
+    # A late receipt is reported metadata only, never payment proof. This update
+    # happens after releasing the attempt lock to preserve settlement lock order.
+    if code == 0:
+        Payment.objects.filter(pk=attempt.payment_id, checkout_request_id=checkout,
+                               verified_at__isnull=False, mpesa_receipt_number="").update(mpesa_receipt_number=receipt.strip())
+    return Response({"ResultCode": 0, "ResultDesc": "Recorded; awaiting independent verification"})

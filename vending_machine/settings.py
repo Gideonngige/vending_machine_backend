@@ -159,3 +159,7 @@ STOCK_RESERVATION_MINUTES = max(1, int(os.getenv('STOCK_RESERVATION_MINUTES', '1
 STATIC_URL = 'static/'
 
 
+
+MPESA_RECHECK_SECONDS = max(10, int(os.getenv('MPESA_RECHECK_SECONDS', '30')))
+# Only explicitly known final failures are eligible for automatic release.
+MPESA_TERMINAL_FAILURE_CODES = {code.strip() for code in os.getenv('MPESA_TERMINAL_FAILURE_CODES', '1032').split(',') if code.strip()}

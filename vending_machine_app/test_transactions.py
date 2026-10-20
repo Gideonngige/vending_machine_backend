@@ -55,7 +55,7 @@ class TransactionTests(TestCase):
         self.attempt(payment, "SUCCESS")
         self.attempt(payment, "UNKNOWN")
         DispenseRequest.objects.create(order=order, machine_slot=1, status="FAILED", error_message="Controller error")
-        expected = {"paid_not_dispensed", "extra_payments", "uncertain", "dispense_failed"}
+        expected = {"paid_not_dispensed", "extra_payments", "uncertain", "dispense_failed", "unverified"}
         row = self.client.get(self.base).json()["results"][0]
         self.assertEqual(set(row["attention"]), expected)
         for flag in expected:
