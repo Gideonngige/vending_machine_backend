@@ -1,0 +1,64 @@
+{% extends "admin/base_site.html" %}
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  .sales-toolbar { display:flex; flex-wrap:wrap; gap:1rem; align-items:center; margin-bottom:1.5rem; }
+  .sales-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem; margin-bottom:2rem; }
+  .sales-card { border:1px solid var(--hairline-color); border-radius:8px; padding:1.25rem; background:var(--body-bg); }
+  .sales-card h2 { margin-top:0; }
+  .sales-amount { font-size:1.8rem; font-weight:700; margin:1rem 0; }
+  .sales-tables { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr)); gap:1.5rem; }
+  .sales-table { width:100%; }
+  .sales-table caption { text-align:left; font-size:1.1rem; font-weight:bold; margin-bottom:.75rem; }
+  .sales-table td, .sales-table th { padding:.8rem; }
+  .sales-note { color:var(--body-quiet-color); line-height:1.6; max-width:85ch; }
+</style>
+{% endblock %}
+{% block breadcrumbs %}
+<div class="breadcrumbs"><a href="{% url 'admin:index' %}">Home</a> › Sales dashboard</div>
+{% endblock %}
+{% block content %}
+<form method="get" class="sales-toolbar">
+  <label for="machine">Machine</label>
+  <select id="machine" name="machine">
+    <option value="">All machines</option>
+    {% for machine in machines %}
+    <option value="{{ machine.code }}" {% if summary.machine == machine.code %}selected{% endif %}>{{ machine.code }} — {{ machine.name }}{% if not machine.is_enabled %} (disabled){% endif %}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="button">Update report</button>
+  <span>As of {{ summary.as_of }} · {{ summary.timezone }}</span>
+</form>
+<div class="sales-cards">
+  {% for label, period in periods %}
+  <section class="sales-card">
+    <h2>{{ label }}</h2>
+    <p class="sales-amount">KSh {{ period.revenue|floatformat:2 }}</p>
+    <p>{{ period.paid_orders }} paid order{{ period.paid_orders|pluralize }}</p>
+    <p>{{ period.coffees_dispensed }} coffee{{ period.coffees_dispensed|pluralize }} dispensed</p>
+  </section>
+  {% endfor %}
+  <section class="sales-card">
+    <h2>All time</h2>
+    <p class="sales-amount">KSh {{ summary.all_time.revenue|floatformat:2 }}</p>
+    <p>{{ summary.all_time.paid_orders }} paid order{{ summary.all_time.paid_orders|pluralize }}</p>
+  </section>
+</div>
+<div class="sales-tables">
+  <table class="sales-table">
+    <caption>Sales by product · all time</caption>
+    <thead><tr><th scope="col">Product</th><th scope="col">Paid orders</th><th scope="col">Revenue</th></tr></thead>
+    <tbody>{% for row in summary.by_product %}
+      <tr><th scope="row">{{ row.order__product_name }}</th><td>{{ row.paid_orders }}</td><td>KSh {{ row.revenue|floatformat:2 }}</td></tr>
+    {% empty %}<tr><td colspan="3">No successful payments yet.</td></tr>{% endfor %}</tbody>
+  </table>
+  <table class="sales-table">
+    <caption>Sales by machine · all time</caption>
+    <thead><tr><th scope="col">Machine</th><th scope="col">Paid orders</th><th scope="col">Revenue</th></tr></thead>
+    <tbody>{% for row in summary.by_machine %}
+      <tr><th scope="row">{{ row.order__machine__code }} — {{ row.order__machine__name }}</th><td>{{ row.paid_orders }}</td><td>KSh {{ row.revenue|floatformat:2 }}</td></tr>
+    {% empty %}<tr><td colspan="3">No successful payments yet.</td></tr>{% endfor %}</tbody>
+  </table>
+</div>
+<p class="sales-note">Revenue counts successful order payments, before refunds and fees. Extra payments awaiting review are excluded. Dispensed quantities require a confirmed completion timestamp. The week starts on Monday; current periods run through today. Use “Update report” to refresh the figures.</p>
+{% endblock %}

@@ -17,9 +17,7 @@ def revenue(payments):
     return str(payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00"))
 
 
-@api_view(["GET"])
-@permission_classes([IsAdminUser])
-def sales_summary(request):
+def build_sales_summary(machine_code=None):
     today = timezone.localdate()
     zone = timezone.get_current_timezone()
 
@@ -28,7 +26,6 @@ def sales_summary(request):
 
     payments = Payment.objects.filter(status=Payment.Status.SUCCESS, paid_at__isnull=False)
     orders = Order.objects.all()
-    machine_code = request.query_params.get("machine")
     if machine_code:
         machine = get_object_or_404(Machine, code=machine_code)
         payments = payments.filter(order__machine=machine)
@@ -55,7 +52,7 @@ def sales_summary(request):
             ).order_by(*fields)
         ]
 
-    return Response({
+    return {
         "currency": "KES", "timezone": str(zone), "as_of": today.isoformat(),
         "machine": machine_code,
         "today": period(today),
@@ -64,4 +61,10 @@ def sales_summary(request):
         "all_time": {"revenue": revenue(payments), "paid_orders": payments.count()},
         "by_product": breakdown("order__product_id", "order__product_name"),
         "by_machine": breakdown("order__machine__code", "order__machine__name"),
-    })
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminUser])
+def sales_summary(request):
+    return Response(build_sales_summary(request.query_params.get("machine")))

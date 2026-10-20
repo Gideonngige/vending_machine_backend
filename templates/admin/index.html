@@ -1,0 +1,8 @@
+{% extends "admin/index.html" %}
+{% block content %}
+<div class="module">
+  <h2>Business reporting</h2>
+  <p><a href="{% url 'sales-dashboard' %}">Open sales dashboard →</a></p>
+</div>
+{{ block.super }}
+{% endblock %}

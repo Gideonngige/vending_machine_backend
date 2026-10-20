@@ -64,3 +64,29 @@ class SalesReportTests(TestCase):
         self.assertEqual(data["today"]["paid_orders"], 1)
         self.assertEqual(data["week"]["paid_orders"], 2)
         self.assertEqual(data["timezone"], "Africa/Nairobi")
+
+    def test_dashboard_requires_staff_login(self):
+        url = "/admin/sales-report/"
+        self.assertRedirects(self.client.get(url), f"/admin/login/?next={url}", fetch_redirect_response=False)
+        user = get_user_model().objects.create_user(username="viewer")
+        self.client.force_login(user)
+        self.assertEqual(self.client.get(url).status_code, 302)
+
+    def test_dashboard_matches_api_and_links_from_admin(self):
+        self.paid_order(quantity=2)
+        self.client.force_login(self.staff)
+        response = self.client.get("/admin/sales-report/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["summary"], self.client.get(self.url).json())
+        self.assertContains(response, "KSh 200.00")
+        self.assertContains(response, "Sales by product")
+        self.assertContains(self.client.get("/admin/"), "Open sales dashboard")
+
+    def test_dashboard_machine_filter_and_empty_state(self):
+        Machine.objects.create(code="EMPTY", name="Empty machine")
+        self.paid_order()
+        self.client.force_login(self.staff)
+        response = self.client.get("/admin/sales-report/?machine=EMPTY")
+        self.assertContains(response, "No successful payments yet.")
+        self.assertEqual(response.context["summary"]["all_time"]["paid_orders"], 0)
+        self.assertEqual(self.client.get("/admin/sales-report/?machine=MISSING").status_code, 404)
