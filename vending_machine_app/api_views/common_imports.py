@@ -4,6 +4,11 @@ from vending_machine_app.models import (
     Machine, 
     CoffeeProduct, 
     MachineProduct,
+    CoffeeOrder,
+    CoffeePayment,
+    DispenseJob,
+    DarajaConfiguration,
+    CoffeePricing,
     
 )
 
@@ -51,3 +56,18 @@ from rest_framework.response import Response
 
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
+
+
+from decimal import Decimal
+from django.db import transaction
+from django.db.models import F
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+
+
+import json
+import logging
+from django.utils import timezone
+from django.db import transaction
+
+logger = logging.getLogger(__name__)
