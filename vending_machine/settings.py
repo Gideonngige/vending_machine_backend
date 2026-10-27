@@ -43,8 +43,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'vending_machine_app',
     'corsheaders', 
-    'rest_framework',
-    'rest_framework_simplejwt.token_blacklist',
+    'rest_framework'
 ]
 
 MIDDLEWARE = [
@@ -58,30 +57,32 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOW_CREDENTIALS = False
-CORS_ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv(
-    'FRONTEND_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173'
-).split(',') if origin.strip()]
-CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
-SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SECURE = os.getenv('DJANGO_COOKIE_SECURE', 'false').lower() == 'true'
-CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
-SESSION_COOKIE_SAMESITE = os.getenv('DJANGO_COOKIE_SAMESITE', 'Lax')
-CSRF_COOKIE_SAMESITE = SESSION_COOKIE_SAMESITE
+
+
+
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
     ],
 }
+
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=5),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
-    'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': True,
-    'CHECK_REVOKE_TOKEN': True,
-    'SIGNING_KEY': os.getenv('JWT_SIGNING_KEY') or SECRET_KEY,
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
+    "AUTH_HEADER_TYPES": ("Bearer",),
 }
+
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+# AUTH_USER_MODEL = 'shopscan_app.ShopKeeper'
+
 
 ROOT_URLCONF = 'vending_machine.urls'
 
