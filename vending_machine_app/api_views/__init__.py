@@ -5,3 +5,5 @@ from .catalog import *
 from .checkout import *
 from .machines import *
 from .storefront import *
+from .orders import *
+from .payments import *

@@ -11,6 +11,8 @@ from .api_views.machines import *
 from .api_views.catalog import *
 from .api_views.storefront import *
 from .api_views.checkout import *
+from .api_views.orders import *
+from .api_views.payments import *
 
 
 
@@ -49,5 +51,17 @@ urlpatterns = [
     path("orders/<str:reference>/pay/", initiate_payment, name='initiate_payment'),
     path("orders/<str:reference>/collect/", collect_order, name='collect_order'),
     path("payments/mpesa/callback/", mpesa_callback, name='mpesa_callback'),
+
+    # orders
+    path("vending/orders/", business_orders, name="business-orders"),
+
+    # payments
+
+    path("payments/", business_payments, name="business-payments"),
+    path("payments/stats/", business_payment_stats, name="business-payment-stats"),
+    path("payments/daraja-config/", daraja_configuration, name="daraja-configuration"),
+    path("payments/daraja-config/test/", test_daraja_configuration, name="test-daraja-configuration"),
+    path("payments/<int:payment_id>/", business_payment_detail, name="business-payment-detail"),
+
     
 ]

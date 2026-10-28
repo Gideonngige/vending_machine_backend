@@ -2,13 +2,14 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
-from .models import Business, Machine, CoffeeProduct, MachineProduct, BusinessMembership
+from .models import Business, Machine, CoffeeProduct, MachineProduct, BusinessMembership, DarajaConfiguration
 
 from vending_machine_app.permissions import require_business_role, require_business_role
 
 from rest_framework import serializers
 
 from django.db import transaction
+
 
 
 User = get_user_model()
@@ -514,4 +515,43 @@ class MachineProductSerializer(serializers.ModelSerializer):
             })
 
         return attrs
+
+
+
+# payments
+
+
+class DarajaConfigSerializer(serializers.ModelSerializer):
+    consumer_key = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+    consumer_secret = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+    passkey = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+
+    class Meta:
+        model = DarajaConfiguration
+        fields = [
+            "environment",
+            "shortcode",
+            "callback_url",
+            "consumer_key",
+            "consumer_secret",
+            "passkey",
+        ]
+
+    def validate(self, attrs):
+        environment = attrs.get(
+            "environment",
+            getattr(self.instance, "environment", "sandbox")
+        )
+        if environment not in ("sandbox", "production"):
+            raise serializers.ValidationError({
+                "environment": "Choose sandbox or production."
+            })
+        return attrs
+
 
