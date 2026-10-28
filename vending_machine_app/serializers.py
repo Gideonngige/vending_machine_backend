@@ -2,36 +2,144 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
-from .models import Business, Machine, CoffeeProduct, MachineProduct
+from .models import Business, Machine, CoffeeProduct, MachineProduct, BusinessMembership
 
 from vending_machine_app.permissions import require_business_role, require_business_role
 
 from rest_framework import serializers
+
+from django.db import transaction
 
 
 User = get_user_model()
 
 
 class RegisterSerializer(serializers.ModelSerializer):
+
     password = serializers.CharField(
         write_only=True,
         validators=[validate_password],
+        style={"input_type": "password"},
+    )
+
+    confirm_password = serializers.CharField(
+        write_only=True,
+        style={"input_type": "password"},
+    )
+
+    # Business information
+    business_name = serializers.CharField(
+        max_length=200
+    )
+
+    business_phone = serializers.CharField(
+        max_length=30
+    )
+
+    business_email = serializers.EmailField(
+        required=False,
+        allow_blank=True
+    )
+
+    business_county = serializers.CharField(
+        max_length=100
+    )
+
+    business_address = serializers.CharField(
+        max_length=255
+    )
+
+    business_description = serializers.CharField(
+        required=False,
+        allow_blank=True
+    )
+
+    business_logo_url = serializers.URLField(
+        required=False,
+        allow_blank=True
     )
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "password"]
+
+        fields = [
+            "id",
+            "username",
+            "email",
+            "password",
+            "confirm_password",
+            "business_name",
+            "business_phone",
+            "business_email",
+            "business_county",
+            "business_address",
+            "business_description",
+            "business_logo_url",
+        ]
+
         read_only_fields = ["id"]
 
     def validate_email(self, value):
-        if User.objects.filter(email__iexact=value).exists():
+        if User.objects.filter(
+            email__iexact=value
+        ).exists():
             raise serializers.ValidationError(
                 "Email is already registered."
             )
+
         return value
 
+    def validate(self, attrs):
+        if attrs["password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({
+                "confirm_password": "Passwords do not match."
+            })
+
+        return attrs
+
+    @transaction.atomic
     def create(self, validated_data):
-        return User.objects.create_user(**validated_data)
+
+        validated_data.pop("confirm_password")
+
+        business_data = {
+            "name": validated_data.pop("business_name"),
+            "phone": validated_data.pop("business_phone"),
+            "email": validated_data.pop("business_email", ""),
+            "county": validated_data.pop("business_county"),
+            "address": validated_data.pop("business_address"),
+            "description": validated_data.pop(
+                "business_description", ""
+            ),
+            "logo_url": validated_data.pop(
+                "business_logo_url", ""
+            ),
+        }
+
+        # 1. Create user
+        user = User.objects.create_user(
+            **validated_data
+        )
+
+        # 2. Create business
+        business = Business.objects.create(
+            owner=user,
+            **business_data
+        )
+
+        # 3. Assign owner membership
+        BusinessMembership.objects.create(
+            business=business,
+            user=user,
+            role="OWNER",
+            is_active=True,
+        )
+
+        # Make business available to the view
+        self.created_business = business
+
+        return user
+
 
 
 class UserSerializer(serializers.ModelSerializer):
