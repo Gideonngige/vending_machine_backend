@@ -33,7 +33,7 @@ urlpatterns = [
 
     # machines
     path("machines/", machine_list_create, name='machine_list_create'),
-    path("machines/<int:machine_id>/", machine_detail, name='machine_detail'),
+    path("machines/<str:machine_id>/", machine_detail, name='machine_detail'),
 
 
     # catalog
