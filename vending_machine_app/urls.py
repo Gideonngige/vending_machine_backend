@@ -13,6 +13,7 @@ from .api_views.storefront import *
 from .api_views.checkout import *
 from .api_views.orders import *
 from .api_views.payments import *
+from .api_views.pricing import *
 
 
 
@@ -62,6 +63,11 @@ urlpatterns = [
     path("payments/daraja-config/", daraja_configuration, name="daraja-configuration"),
     path("payments/daraja-config/test/", test_daraja_configuration, name="test-daraja-configuration"),
     path("payments/<int:payment_id>/", business_payment_detail, name="business-payment-detail"),
+
+    # pricing
+    path("pricing/", pricing_list_create, name="pricing-list-create"), 
+    path("pricing/stats/", pricing_stats, name="pricing-stats"),
+    path("pricing/<int:pricing_id>/", pricing_detail, name="pricing-detail"),
 
     
 ]

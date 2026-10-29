@@ -505,6 +505,12 @@ class CoffeePricing(models.Model):
         related_name="coffee_pricing"
     )
 
+    machine = models.ForeignKey(
+        Machine,
+        on_delete=models.CASCADE,
+        related_name="pricing_rules",
+    )
+
     # --------------------------------------------------------
     # Coffee Product
     # --------------------------------------------------------
