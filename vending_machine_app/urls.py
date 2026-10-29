@@ -14,6 +14,7 @@ from .api_views.checkout import *
 from .api_views.orders import *
 from .api_views.payments import *
 from .api_views.pricing import *
+from .api_views.marketplace import *
 
 
 
@@ -68,6 +69,11 @@ urlpatterns = [
     path("pricing/", pricing_list_create, name="pricing-list-create"), 
     path("pricing/stats/", pricing_stats, name="pricing-stats"),
     path("pricing/<int:pricing_id>/", pricing_detail, name="pricing-detail"),
+
+
+    # marketplace
+    path("marketplace/machines/", marketplace_machines, name='marketplace_machines'),
+    path("marketplace/machines/<uuid:machine_id>/", marketplace_machine_detail, name='marketplace_machine_detail'),
 
     
 ]

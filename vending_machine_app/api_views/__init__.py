@@ -8,3 +8,4 @@ from .storefront import *
 from .orders import *
 from .payments import *
 from .pricing import *
+from .marketplace import *
